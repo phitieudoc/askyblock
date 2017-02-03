@@ -1,14 +1,14 @@
 --- 
-acidBottle: "Acid Bottle"
-acidBucket: "Acid Bucket"
+acidBottle: "Chai Axit"
+acidBucket: "Xô Axit"
 acidLore: |
-    Do
-    not drink!
-    Beware!
+    Không
+    được uống!
+    Cẩn thận!
 adminDeleteIsland: 
-  error: "Use &ldeleteisland confirm &r&cto delete the island you are on."
-  noid: "Cannot identify island."
-  use: "Use &ldelete [name] &r&cto delete the player instead."
+  error: "Sử dụng &ldeleteisland confirm &r&cđể xoá hòn đảo bạn đang ở."
+  noid: "Không thể nhận dạng hòn đảo."
+  use: "Sử dụng &ldelete [name] &r&cđể xoá người chơi thay vì."
 adminHelp: 
   add: "adds player to leader's team"
   addrange: "adds to or substracts from the island's protection range"
