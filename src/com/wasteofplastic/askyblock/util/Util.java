@@ -18,34 +18,58 @@
 package com.wasteofplastic.askyblock.util;
 
 import java.io.File;
+import java.io.FilenameFilter;
+import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.BlockFace;
+import org.bukkit.command.CommandSender;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.scheduler.BukkitTask;
 
 import com.wasteofplastic.askyblock.ASkyBlock;
-import com.wasteofplastic.askyblock.PlayerCache;
+import com.wasteofplastic.askyblock.Settings;
 import com.wasteofplastic.askyblock.nms.NMSAbstraction;
 
 /**
  * A set of utility methods
- * 
+ *
  * @author tastybento
- * 
+ *
  */
-public class Util {
-    private static ASkyBlock plugin = ASkyBlock.getPlugin();
+public final class Util {
+
+    private Util() { }
+
+    private static final ASkyBlock plugin = ASkyBlock.getPlugin();
+    private static final long TIMEOUT = 3000; // 3 seconds
+    private static Long x = System.nanoTime();
+    private static Queue<PendingItem> saveQueue = new ConcurrentLinkedQueue<>();
+    private static boolean midSave = false;
+    private static BukkitTask queueSaver;
+    private static boolean midLoad = false;
 
     /**
      * Loads a YAML file and if it does not exist it is looked for in the JAR
-     * 
+     *
      * @param file
      * @return
      */
@@ -55,16 +79,24 @@ public class Util {
 
         YamlConfiguration config = null;
         if (yamlFile.exists()) {
+            // Set midLoad flag to pause any saving
+            midLoad = true;
+            // Block until saving is paused or until a timeout, just to prevent infinite loop
+            long watchdog = System.currentTimeMillis();
+            while(midSave && System.currentTimeMillis() < watchdog + TIMEOUT ) {};
             try {
                 config = new YamlConfiguration();
                 config.load(yamlFile);
             } catch (Exception e) {
                 e.printStackTrace();
             }
+            midLoad = false;
         } else {
             // Create the missing file
             config = new YamlConfiguration();
-            plugin.getLogger().info("No " + file + " found. Creating it...");
+            if (!file.startsWith("players")) {
+                plugin.getLogger().info("No " + file + " found. Creating it...");
+            }
             try {
                 if (plugin.getResource(file) != null) {
                     plugin.getLogger().info("Using default found in jar file.");
@@ -83,25 +115,66 @@ public class Util {
 
     /**
      * Saves a YAML file
-     * 
+     *
      * @param yamlFile
      * @param fileLocation
+     * @param async
      */
-    public static void saveYamlFile(YamlConfiguration yamlFile, String fileLocation) {
+    public static void saveYamlFile(YamlConfiguration yamlFile, String fileLocation, boolean async) {
+        async = false; // disable async for now. If you are programmer you can remove this in you own branch if you think it's okay.
+        if (async) {
+            if (queueSaver == null) {
+                queueSaver = Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, () -> {
+                    if (!plugin.isEnabled()) {
+                        // Stop task if plugin is disabled
+                        queueSaver.cancel();
+                    } else if (!midLoad && !midSave && !saveQueue.isEmpty()) {
+                        PendingItem item = saveQueue.poll();
+                        if (item != null) {
+                            // Set semaphore
+                            midSave = true;
+                            try {
+                                Files.copy(item.getSource(), item.getDest(), StandardCopyOption.REPLACE_EXISTING);
+                                Files.delete(item.getSource());
+                            } catch (IOException e) {
+                                e.printStackTrace();
+                            }
+                            // Clear semaphore
+                            midSave = false;
+                        }
+                    }
+                }, 0L, 1L);
+            }
+        }
+        save(yamlFile, fileLocation, async);
+    }
+
+    private static void save(YamlConfiguration yamlFile, String fileLocation, boolean async) {
         File dataFolder = plugin.getDataFolder();
         File file = new File(dataFolder, fileLocation);
-
         try {
-            yamlFile.save(file);
+            File tmpFile = File.createTempFile("yaml", null, dataFolder);
+            tmpFile.deleteOnExit();
+            yamlFile.save(tmpFile);
+            if (tmpFile.exists()) {
+                if (async) {
+                    saveQueue.add(new PendingItem(tmpFile.toPath(), file.toPath()));
+                } else {
+                    Files.copy(tmpFile.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                    Files.delete(tmpFile.toPath());
+                }
+            }
         } catch (Exception e) {
+            plugin.getLogger().severe(() -> "Could not save YAML file: " + e.getMessage());
             e.printStackTrace();
         }
     }
 
+
     /**
      * Cuts up a string into multiple lines with the same color code at the
      * start of each line
-     * 
+     *
      * @param color
      * @param longLine
      * @param length
@@ -109,6 +182,11 @@ public class Util {
      */
     public static List<String> chop(ChatColor color, String longLine, int length) {
         List<String> result = new ArrayList<String>();
+        if (longLine.contains("|") || longLine.contains("§")) {
+            // Split pip character requires escaping it
+            String[] split = longLine.split("\\|");
+            return new ArrayList<String>(Arrays.asList(split));
+        }
         // int multiples = longLine.length() / length;
         int i = 0;
         for (i = 0; i < longLine.length(); i += length) {
@@ -144,7 +222,7 @@ public class Util {
     /**
      * Converts block face direction to radial degrees. Returns 0 if block face
      * is not radial.
-     * 
+     *
      * @param face
      * @return degrees
      */
@@ -189,11 +267,11 @@ public class Util {
 
     /**
      * Converts a name like IRON_INGOT into Iron Ingot to improve readability
-     * 
+     *
      * @param ugly
      *            The string such as IRON_INGOT
      * @return A nicer version, such as Iron Ingot
-     * 
+     *
      *         Credits to mikenon on GitHub!
      */
     public static String prettifyText(String ugly) {
@@ -219,7 +297,7 @@ public class Util {
     /**
      * Converts a serialized location to a Location. Returns null if string is
      * empty
-     * 
+     *
      * @param s
      *            - serialized location in format "world:x:y:z"
      * @return Location
@@ -256,7 +334,7 @@ public class Util {
     /**
      * Converts a location to a simple string representation
      * If location is null, returns empty string
-     * 
+     *
      * @param location
      * @return String of location
      */
@@ -268,9 +346,9 @@ public class Util {
     }
 
     /**
-     * Returns all of the items that begin with the given start, 
-     * ignoring case.  Intended for tabcompletion. 
-     * 
+     * Returns all of the items that begin with the given start,
+     * ignoring case.  Intended for tabcompletion.
+     *
      * @param list
      * @param start
      * @return List of items that start with the letters
@@ -278,6 +356,8 @@ public class Util {
     public static List<String> tabLimit(final List<String> list, final String start) {
         final List<String> returned = new ArrayList<String>();
         for (String s : list) {
+            if (s == null)
+                continue;
             if (s.toLowerCase().startsWith(start.toLowerCase())) {
                 returned.add(s);
             }
@@ -288,18 +368,13 @@ public class Util {
 
     /**
      * Gets a list of all players who are currently online.
-     * 
+     *
      * @return list of online players
      */
     public static List<String> getOnlinePlayerList() {
-        final List<String> returned = new ArrayList<String>();
-        final List<Player> players = PlayerCache.getOnlinePlayers();
-        for (Player p : players) {
-            returned.add(p.getName());
-        }
-        return returned;
+        return getOnlinePlayerList(null);
     }
-    
+
     /**
      * Checks what version the server is running and picks the appropriate NMS handler, or fallback
      * @return NMSAbstraction class
@@ -332,6 +407,172 @@ public class Util {
             return (NMSAbstraction) clazz.getConstructor().newInstance();
         } else {
             throw new IllegalStateException("Class " + clazz.getName() + " does not implement NMSAbstraction");
+        }
+    }
+
+    /**
+     * Send a message to sender if message is not empty. Does not include color codes or spaces
+     * @param sender
+     * @param message
+     */
+    public static void sendMessage(CommandSender sender, String message) {
+        if (!ChatColor.stripColor(message).trim().isEmpty()) {
+            sender.sendMessage(message);
+        }
+    }
+
+    /**
+     * @return random long number using XORShift random number generator
+     */
+    public static long randomLong() {
+        x ^= (x << 21);
+        x ^= (x >>> 35);
+        x ^= (x << 4);
+        return Math.abs(x);
+    }
+
+    /**
+     * @return random double using XORShift random number generator
+     */
+    public static double randomDouble() {
+        return (double)randomLong()/Long.MAX_VALUE;
+    }
+
+    /**
+     * Changes the setting in config.yml to a new value without removing comments (saveConfig() removes comments)
+     * @param oldSetting
+     * @param newSetting
+     * @throws IOException
+     */
+    public static void setConfig(String setting, String oldSetting, String newSetting) throws IOException {
+        setYamlConfig(plugin.getDataFolder().getAbsolutePath() + File.separator + "config.yml", setting, oldSetting, newSetting);
+    }
+
+    /**
+     * Changes the setting in a YAML file to a new value without removing comments (saveConfig() removes comments)
+     * @param absoluteFilename
+     * @param setting
+     * @param oldSetting
+     * @param newSetting
+     * @throws IOException
+     */
+    public static void setYamlConfig(String absoluteFilename, String setting, String oldSetting, String newSetting) throws IOException {
+        Path path = Paths.get(absoluteFilename);
+        Charset charset = StandardCharsets.UTF_8;
+        String content = new String(Files.readAllBytes(path), charset);
+        content = content.replaceAll(setting + ": " + oldSetting, setting + ": " + newSetting);
+        Files.write(path, content.getBytes(charset));
+    }
+
+    /**
+     * Changes a setting in all player files in the player folder. If the setting does not exist, no change is made
+     * This is not a true YAML change, if the setting name exists multiple times in the file, all lines will be changed.
+     * The setting must include any spaces at the front if required
+     * @param playerFolder
+     * @param setting - name of the YAML setting, e.g., locale
+     * @param newSettingValue - the new value for this setting
+     * @throws IOException
+     */
+    public static void setPlayerYamlConfig(File playerFolder, String setting, String newSettingValue) throws IOException {
+        FilenameFilter ymlFilter = (dir, name) -> {
+            String lowercaseName = name.toLowerCase();
+            return lowercaseName.endsWith(".yml");
+        };
+        for (File file: playerFolder.listFiles(ymlFilter)) {
+            Path path = Paths.get(file.getAbsolutePath());
+            Charset charset = StandardCharsets.UTF_8;
+
+            List<String> fileContent = new ArrayList<>(Files.readAllLines(path, charset));
+
+            for (int i = 0; i < fileContent.size(); i++) {
+                if (fileContent.get(i).startsWith(setting)) {
+                    fileContent.set(i, setting + ": " + newSettingValue);
+                    break;
+                }
+            }
+
+            Files.write(path, fileContent, charset);
+        }
+    }
+
+    /**
+     * Display message to player in action bar (1.11+ or chat)
+     * @param player
+     * @param message
+     */
+    public static void sendEnterExit(Player player, String message) {
+        if (!Settings.showInActionBar
+                || plugin.getServer().getVersion().contains("(MC: 1.7")
+                || plugin.getServer().getVersion().contains("(MC: 1.8")
+                || plugin.getServer().getVersion().contains("(MC: 1.9")
+                || plugin.getServer().getVersion().contains("(MC: 1.10")) {
+            sendMessage(player, message);
+            return;
+        }
+        plugin.getServer().dispatchCommand(plugin.getServer().getConsoleSender(),
+                "minecraft:title " + player.getName() + " actionbar {\"text\":\"" + ChatColor.stripColor(message) + "\"}");
+    }
+
+    /**
+     * Return a list of online players this player can see, i.e. are not invisible
+     * @param player
+     * @return
+     */
+    public static List<String> getOnlinePlayerList(Player player) {
+        final List<String> returned = new ArrayList<String>();
+        for (Player p : Bukkit.getServer().getOnlinePlayers()) {
+            if (player == null || player.canSee(p)) {
+                returned.add(p.getName());
+            }
+        }
+        return returned;
+    }
+
+    /**
+     * Results a list of items in a player's hands. Works for older versions of servers
+     * @param player
+     * @return list of itemstacks
+     */
+    @SuppressWarnings("deprecation")
+    public static List<ItemStack> getPlayerInHandItems(Player player) {
+        List<ItemStack> result = new ArrayList<ItemStack>(2);
+        if (plugin.getServer().getVersion().contains("(MC: 1.7")
+                || plugin.getServer().getVersion().contains("(MC: 1.8")) {
+            if (player.getItemInHand() != null)
+                result.add(player.getItemInHand());
+            return result;
+        }
+        if (player.getInventory().getItemInMainHand() != null)
+            result.add(player.getInventory().getItemInMainHand());
+        if (player.getInventory().getItemInOffHand() != null)
+            result.add(player.getInventory().getItemInOffHand());
+        return result;
+    }
+
+    /**
+     * Checks if player has this type of item in either hand
+     * @param player
+     * @param type
+     * @return true if they are holding an item of type type
+     */
+    @SuppressWarnings("deprecation")
+    public static boolean playerIsHolding(Player player, Material type) {
+        if (plugin.getServer().getVersion().contains("(MC: 1.7")
+                || plugin.getServer().getVersion().contains("(MC: 1.8")) {
+            return player.getItemInHand() != null && player.getItemInHand().getType().equals(type);
+        }
+        if (player.getInventory().getItemInMainHand() != null && player.getInventory().getItemInMainHand().getType().equals(type)) {
+            return true;
+        }
+        return player.getInventory().getItemInMainHand() != null && player.getInventory()
+                .getItemInOffHand().getType().equals(type);
+    }
+
+    public static void runCommand(final Player player, final String string) {
+        if (plugin.getServer().isPrimaryThread()) {
+            player.performCommand(string);
+        } else {
+            plugin.getServer().getScheduler().runTask(plugin, () -> player.performCommand(string));
         }
     }
 }

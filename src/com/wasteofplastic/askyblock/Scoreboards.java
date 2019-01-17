@@ -33,16 +33,15 @@ import org.bukkit.scoreboard.Team;
  *
  */
 public class Scoreboards {
-    private static ASkyBlock plugin = ASkyBlock.getPlugin();
-    private static Scoreboards instance = new Scoreboards();
-    private static ScoreboardManager manager;
+    private static final ASkyBlock plugin = ASkyBlock.getPlugin();
+    private static final Scoreboards instance = new Scoreboards();
     private static Scoreboard board;
 
     /**
      * 
      */
     private Scoreboards() {
-        manager = Bukkit.getScoreboardManager();
+        ScoreboardManager manager = Bukkit.getScoreboardManager();
         board = manager.getNewScoreboard();
     }
 
@@ -55,7 +54,7 @@ public class Scoreboards {
 
     /**
      * Puts a player into a team of their own and sets the team suffix to be the level
-     * @param playerUUID
+     * @param playerUUID - the player's UUID
      */
     public void setLevel(UUID playerUUID) {
         Player player = plugin.getServer().getPlayer(playerUUID);
@@ -65,7 +64,7 @@ public class Scoreboards {
         }
         // The default team name is their own name
         String teamName = player.getName();
-        String level = plugin.getPlayers().getIslandLevel(playerUUID).toString();
+        String level = String.valueOf(plugin.getPlayers().getIslandLevel(playerUUID));
         Team team = board.getTeam(teamName);
         if (team == null) {
             //Team does not exist
@@ -81,10 +80,10 @@ public class Scoreboards {
 
     /**
      * Sets the player's level explicitly
-     * @param playerUUID
-     * @param level
+     * @param playerUUID - the player's UUID
+     * @param l
      */
-    public void setLevel(UUID playerUUID, int level) {
+    public void setLevel(UUID playerUUID, long l) {
         Player player = plugin.getServer().getPlayer(playerUUID);
         if (player == null) {
             // Player is offline...
@@ -98,7 +97,7 @@ public class Scoreboards {
             team = board.registerNewTeam(teamName);
         }
         // Add the suffix
-        team.setSuffix(Settings.teamSuffix.replace("[level]",String.valueOf(level)));
+        team.setSuffix(Settings.teamSuffix.replace("[level]",String.valueOf(l)));
         //Adding player to team
         team.addPlayer(player);
         // Assign scoreboard to player

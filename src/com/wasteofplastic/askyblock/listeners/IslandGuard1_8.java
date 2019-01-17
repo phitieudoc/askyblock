@@ -17,6 +17,7 @@
 package com.wasteofplastic.askyblock.listeners;
 
 import org.bukkit.ChatColor;
+import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.entity.EntityType;
@@ -33,7 +34,7 @@ import org.bukkit.inventory.ItemStack;
 
 import com.wasteofplastic.askyblock.ASkyBlock;
 import com.wasteofplastic.askyblock.Island;
-import com.wasteofplastic.askyblock.Island.Flags;
+import com.wasteofplastic.askyblock.Island.SettingsFlag;
 import com.wasteofplastic.askyblock.Settings;
 import com.wasteofplastic.askyblock.util.Util;
 import com.wasteofplastic.askyblock.util.VaultHelper;
@@ -53,10 +54,30 @@ public class IslandGuard1_8 implements Listener {
     }
 
     /**
+     * Checks if action is allowed for player in location for flag
+     * @param player
+     * @param location
+     * @param flag
+     * @return true if allowed
+     */
+    private boolean actionAllowed(Player player, Location location, SettingsFlag flag) {
+        // This permission bypasses protection
+        if (player.isOp() || VaultHelper.checkPerm(player, Settings.PERMPREFIX + "mod.bypassprotect")) {
+            return true;
+        }
+        Island island = plugin.getGrid().getProtectedIslandAt(location);
+        if (island != null && (island.getIgsFlag(flag) || island.getMembers().contains(player.getUniqueId()))){
+            return true;
+        }
+        return island == null && Settings.defaultWorldSettings.get(flag);
+    }
+
+
+    /**
      * Handle interaction with armor stands V1.8
      * Note - some armor stand protection is done in IslandGuard.java, e.g. against projectiles.
-     * 
-     * @param e
+     *
+     * @param e - event
      */
     @EventHandler(priority = EventPriority.LOW, ignoreCancelled=true)
     public void onPlayerInteract(final PlayerInteractAtEntityEvent e) {
@@ -66,30 +87,12 @@ public class IslandGuard1_8 implements Listener {
         if (!IslandGuard.inWorld(e.getPlayer())) {
             return;
         }
-        if (e.getPlayer().isOp()) {
-            return;
-        }
-        // This permission bypasses protection
-        if (VaultHelper.checkPerm(e.getPlayer(), Settings.PERMPREFIX + "mod.bypassprotect")) {
-            return;
-        }
         if (e.getRightClicked() != null && e.getRightClicked().getType().equals(EntityType.ARMOR_STAND)) {
-            // Check island
-            Island island = plugin.getGrid().getIslandAt(e.getRightClicked().getLocation());
-            if (island !=null) {
-                if (island.isSpawn()) {
-                    if (Settings.allowSpawnArmorStandUse) {
-                        return;
-                    }
-                } else {
-                    if (island.getMembers().contains(e.getPlayer().getUniqueId()) || island.getIgsFlag(Flags.allowArmorStandUse)) {
-                        return;
-                    }
-                }
+            if (actionAllowed(e.getPlayer(), e.getRightClicked().getLocation(), SettingsFlag.ARMOR_STAND)) {
+                return;
             }
-            // plugin.getLogger().info("1.8 " + "DEBUG: Armor stand clicked off island");
             e.setCancelled(true);
-            e.getPlayer().sendMessage(ChatColor.RED + plugin.myLocale(e.getPlayer().getUniqueId()).islandProtected);
+            Util.sendMessage(e.getPlayer(), ChatColor.RED + plugin.myLocale(e.getPlayer().getUniqueId()).islandProtected);
         }
     }
 
@@ -97,8 +100,8 @@ public class IslandGuard1_8 implements Listener {
      * Handle V1.8 blocks that need special treatment
      * Tilling of coarse dirt into dirt
      * Usually prevented because it could lead to an endless supply of dirt with gravel
-     * 
-     * @param e
+     *
+     * @param e - event
      */
     @SuppressWarnings("deprecation")
     @EventHandler(priority = EventPriority.LOW, ignoreCancelled=true)
@@ -152,31 +155,34 @@ public class IslandGuard1_8 implements Listener {
         }
 
         // Check if they are holding armor stand
-        ItemStack inHand = e.getPlayer().getItemInHand();
-        if (inHand != null && inHand.getType().equals(Material.ARMOR_STAND)) {
-            // Check island
-            Island island = plugin.getGrid().getIslandAt(e.getPlayer().getLocation());
-            if (island !=null && (island.getMembers().contains(p.getUniqueId()) || island.getIgsFlag(Flags.allowPlaceBlocks))) {
-                //plugin.getLogger().info("1.8 " + "DEBUG: armor stand place check");
-                if (Settings.limitedBlocks.containsKey("ARMOR_STAND") && Settings.limitedBlocks.get("ARMOR_STAND") > -1) {
-                    //plugin.getLogger().info("1.8 " + "DEBUG: count armor stands");
-                    int count = island.getTileEntityCount(Material.ARMOR_STAND);
-                    //plugin.getLogger().info("1.8 " + "DEBUG: count is " + count + " limit is " + Settings.limitedBlocks.get("ARMOR_STAND"));
-                    if (Settings.limitedBlocks.get("ARMOR_STAND") <= count) {
-                        e.getPlayer().sendMessage(ChatColor.RED + (plugin.myLocale(e.getPlayer().getUniqueId()).entityLimitReached.replace("[entity]",
-                                Util.prettifyText(Material.ARMOR_STAND.toString()))).replace("[number]", String.valueOf(Settings.limitedBlocks.get("ARMOR_STAND"))));
-                        e.setCancelled(true);
-                        return;
-                    }
+        for (ItemStack inHand : Util.getPlayerInHandItems(e.getPlayer())) {
+            if (inHand.getType().equals(Material.ARMOR_STAND)) {
+                // Check island
+                Island island = plugin.getGrid().getIslandAt(e.getPlayer().getLocation());
+                if (island == null && Settings.defaultWorldSettings.get(SettingsFlag.PLACE_BLOCKS)) {
+                    return;
                 }
-                return;
+                if (island !=null && (island.getMembers().contains(p.getUniqueId()) || island.getIgsFlag(SettingsFlag.PLACE_BLOCKS))) {
+                    //plugin.getLogger().info("1.8 " + "DEBUG: armor stand place check");
+                    if (Settings.limitedBlocks.containsKey("ARMOR_STAND") && Settings.limitedBlocks.get("ARMOR_STAND") > -1) {
+                        //plugin.getLogger().info("1.8 " + "DEBUG: count armor stands");
+                        int count = island.getTileEntityCount(Material.ARMOR_STAND,e.getPlayer().getWorld());
+                        //plugin.getLogger().info("1.8 " + "DEBUG: count is " + count + " limit is " + Settings.limitedBlocks.get("ARMOR_STAND"));
+                        if (Settings.limitedBlocks.get("ARMOR_STAND") <= count) {
+                            Util.sendMessage(e.getPlayer(), ChatColor.RED + (plugin.myLocale(e.getPlayer().getUniqueId()).entityLimitReached.replace("[entity]",
+                                    Util.prettifyText(Material.ARMOR_STAND.toString()))).replace("[number]", String.valueOf(Settings.limitedBlocks.get("ARMOR_STAND"))));
+                            e.setCancelled(true);
+                            return;
+                        }
+                    }
+                    return;
+                }
+                // plugin.getLogger().info("1.8 " + "DEBUG: stand place cancelled");
+                e.setCancelled(true);
+                Util.sendMessage(e.getPlayer(), ChatColor.RED + plugin.myLocale(e.getPlayer().getUniqueId()).islandProtected);
+                e.getPlayer().updateInventory();
             }
-            // plugin.getLogger().info("1.8 " + "DEBUG: stand place cancelled");
-            e.setCancelled(true);
-            e.getPlayer().sendMessage(ChatColor.RED + plugin.myLocale(e.getPlayer().getUniqueId()).islandProtected);
-            e.getPlayer().updateInventory();
         }
-
     }
 
     @EventHandler(priority = EventPriority.LOW, ignoreCancelled=true)
@@ -205,13 +211,13 @@ public class IslandGuard1_8 implements Listener {
             }
             // Check island
             Island island = plugin.getGrid().getIslandAt(e.getEntity().getLocation());
-            if (island != null && island.isSpawn() && Settings.allowSpawnBreakBlocks) {
+            if (island == null && Settings.defaultWorldSettings.get(SettingsFlag.BREAK_BLOCKS)) {
                 return;
             }
-            if (island != null && island.getIgsFlag(Flags.allowBreakBlocks)) {
+            if (island != null && island.getIgsFlag(SettingsFlag.BREAK_BLOCKS)) {
                 return;
             }
-            p.sendMessage(ChatColor.RED + plugin.myLocale(p.getUniqueId()).islandProtected);
+            Util.sendMessage(p, ChatColor.RED + plugin.myLocale(p.getUniqueId()).islandProtected);
             e.setCancelled(true);
         }
     }

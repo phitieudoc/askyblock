@@ -1,5 +1,4 @@
 /*******************************************************************************
- * This file is part of ASkyBlock.
  *
  *     ASkyBlock is free software: you can redistribute it and/or modify
  *     it under the terms of the GNU General Public License as published by
@@ -16,11 +15,10 @@
  *******************************************************************************/
 package com.wasteofplastic.askyblock.listeners;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.util.List;
 import java.util.UUID;
 
+import org.apache.commons.lang.math.NumberUtils;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
 import org.bukkit.entity.Player;
@@ -34,17 +32,16 @@ import org.bukkit.permissions.PermissionAttachmentInfo;
 import com.wasteofplastic.askyblock.ASkyBlock;
 import com.wasteofplastic.askyblock.CoopPlay;
 import com.wasteofplastic.askyblock.Island;
-import com.wasteofplastic.askyblock.LevelCalc;
 import com.wasteofplastic.askyblock.LevelCalcByChunk;
 import com.wasteofplastic.askyblock.PlayerCache;
 import com.wasteofplastic.askyblock.Scoreboards;
 import com.wasteofplastic.askyblock.Settings;
-import com.wasteofplastic.askyblock.TopTen;
+import com.wasteofplastic.askyblock.util.Util;
 import com.wasteofplastic.askyblock.util.VaultHelper;
 
 public class JoinLeaveEvents implements Listener {
-    private ASkyBlock plugin;
-    private PlayerCache players;
+    private final ASkyBlock plugin;
+    private final PlayerCache players;
     private final static boolean DEBUG = false;
 
     public JoinLeaveEvents(ASkyBlock aSkyBlock) {
@@ -55,7 +52,7 @@ public class JoinLeaveEvents implements Listener {
     /**
      * @param event
      */
-    @EventHandler(priority = EventPriority.NORMAL)
+    @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
     public void onPlayerJoin(final PlayerJoinEvent event) {
         if (DEBUG)
             plugin.getLogger().info("DEBUG: on PlayerJoin");
@@ -63,24 +60,12 @@ public class JoinLeaveEvents implements Listener {
         final UUID playerUUID = player.getUniqueId();
         if (DEBUG)
             plugin.getLogger().info("DEBUG: got player UUID");
+        if (playerUUID == null) {
+            plugin.getLogger().severe("Player " + player.getName() + " has a null UUID!");
+            return;
+        }
         // Check language permission
-        if (VaultHelper.checkPerm(player, Settings.PERMPREFIX + "island.lang")) {
-            if (DEBUG)
-                plugin.getLogger().info("DEBUG: checking language");
-            // Get language
-            String language = getLanguage(player);
-            //plugin.getLogger().info("DEBUG: language = " + language);
-            // Check if we have this language
-            if (plugin.getResource("locale/" + language + ".yml") != null) {
-                if (DEBUG)
-                    plugin.getLogger().info("DEBUG:check if lang exists");
-                if (plugin.getPlayers().getLocale(playerUUID).isEmpty()) {
-                    if (DEBUG)
-                        plugin.getLogger().info("DEBUG: setting locale to " + language);
-                    plugin.getPlayers().setLocale(playerUUID, language);
-                }
-            }
-        } else {
+        if (!VaultHelper.checkPerm(player, Settings.PERMPREFIX + "island.lang")) {
             // Default locale
             if (DEBUG)
                 plugin.getLogger().info("DEBUG: using default locale");
@@ -95,29 +80,8 @@ public class JoinLeaveEvents implements Listener {
 
         if (players == null) {
             plugin.getLogger().severe("players is NULL");
+            return;
         }
-        // Load any messages for the player
-        if (DEBUG)
-            plugin.getLogger().info("DEBUG: checking messages for " + player.getName());
-        final List<String> messages = plugin.getMessages().getMessages(playerUUID);
-        if (messages != null) {
-            if (DEBUG)
-                plugin.getLogger().info("DEBUG: Messages waiting!");
-            plugin.getServer().getScheduler().runTaskLater(plugin, new Runnable() {
-                @Override
-                public void run() {
-                    player.sendMessage(ChatColor.AQUA + plugin.myLocale(playerUUID).newsHeadline);
-                    int i = 1;
-                    for (String message : messages) {
-                        player.sendMessage(i++ + ": " + message);
-                    }
-                    // Clear the messages
-                    plugin.getMessages().clearMessages(playerUUID);
-                }
-            }, 40L);
-        } // else {
-        // plugin.getLogger().info("no messages");
-        // }
 
         // If this player is not an island player just skip all this
         if (DEBUG)
@@ -140,6 +104,22 @@ public class JoinLeaveEvents implements Listener {
             leader = players.getTeamLeader(playerUUID);
             players.setTeamIslandLocation(playerUUID, players.getIslandLocation(leader));
         }
+        // This should not be needed. Fixes situation where a team member is listed on more than one team
+        // Only happens when the team leader logs in
+        if (players.inTeam(playerUUID) && players.getTeamLeader(playerUUID).equals(playerUUID)) {
+            // Run through this team leader's players and check they are correct
+            for (UUID member : players.getMembers(playerUUID)) {
+                if (players.getTeamLeader(member) != null && !players.getTeamLeader(member)
+                        .equals(playerUUID)) {
+                    plugin.getLogger().warning(plugin.getPlayers().getName(member)
+                            + " is on more than one team. Fixing...");
+                    plugin.getLogger().warning(
+                            "Removing " + player.getName() + " as team leader, keeping " + plugin
+                            .getPlayers().getName(players.getTeamLeader(member)));
+                    players.removeMember(players.getTeamLeader(member), member);
+                }
+            }
+        }
         // Add island to grid if it is not in there already
         // Add owners to the island grid list as they log in
         // Rationalize any out-of-sync issues, which may occur if the server wasn't shutdown properly, etc.
@@ -158,7 +138,8 @@ public class JoinLeaveEvents implements Listener {
             loc = players.getTeamIslandLocation(playerUUID);
             leader = players.getTeamLeader(playerUUID);
             if (leader == null) {
-                plugin.getLogger().severe("Player "+ player.getName() + " is in a team but leader's UUID is missing.");
+                plugin.getLogger().severe("Player "+ player.getName() + " is in a team but leader's UUID is missing. Leaving team.");
+                players.setLeaveTeam(playerUUID);
             }
         }
         // If the player has an island location of some kind
@@ -184,14 +165,24 @@ public class JoinLeaveEvents implements Listener {
                     // We have a mismatch - correct in favor of the player info
                     if (DEBUG)
                         plugin.getLogger().info("DEBUG: getIslandLoc is null but there is a player listing");
-                    plugin.getLogger().warning(player.getName() + " login: mismatch - player.yml and islands.yml are out of sync. Fixing...");
-                    // Cannot delete by location
-                    plugin.getGrid().deleteIslandOwner(playerUUID);
-                    if (plugin.getGrid().onGrid(loc)) {
-                        plugin.getGrid().addIsland(loc.getBlockX(), loc.getBlockZ(), leader);
+                    plugin.getLogger().severe(player.getName() + " login: mismatch - player.yml and islands.yml are out of sync!");
+                    // There is no island listed at this location. Maybe it was deleted and the player file not saved
+                    // If player is owner of the island
+                    if (playerUUID.equals(leader)) {
+                        // Cannot delete by location
+                        plugin.getGrid().deleteIslandOwner(playerUUID);
+                        if (plugin.getGrid().onGrid(loc)) {
+                            plugin.getGrid().addIsland(loc.getBlockX(), loc.getBlockZ(), playerUUID);
+                        } else {
+                            plugin.getLogger().severe(player.getName() + " joined and has an island at " + loc + " but those coords are NOT on the grid! Use admin register commands to correct!");
+                        }
                     } else {
-                        plugin.getLogger().severe(player.getName() + " joined and has an island at " + loc + " but those coords are NOT on the grid! Use admin register commands to correct!");
+                        plugin.getGrid().deleteIslandOwner(playerUUID);
+                        plugin.getLogger().severe(player.getName() + " login: mismatch - player file says they are in a team, but it's unlikely.");
+                        player.sendMessage(ChatColor.RED + "Your player file had an issue and had to be reset.");
+                        plugin.deletePlayerIsland(playerUUID, false);
                     }
+
                 }
             } else {
                 if (DEBUG)
@@ -221,68 +212,73 @@ public class JoinLeaveEvents implements Listener {
                                 plugin.getLogger().info("DEBUG: everything looks good");
                             }
                             // Dynamic island range sizes with permissions
-                            int range = islandByOwner.getProtectionSize();
+                            boolean hasARangePerm = false;
+                            int range = Settings.islandProtectionRange;
+                            // Check for zero protection range
+                            if (island.getProtectionSize() == 0) {
+                                plugin.getLogger().warning("Player " + player.getName() + "'s island had a protection range of 0. Setting to default " + range);
+                                island.setProtectionSize(range);
+                            }
                             for (PermissionAttachmentInfo perms : player.getEffectivePermissions()) {
                                 if (perms.getPermission().startsWith(Settings.PERMPREFIX + "island.range.")) {
                                     if (DEBUG)
                                         plugin.getLogger().info("DEBUG: perm found");
                                     if (perms.getPermission().contains(Settings.PERMPREFIX + "island.range.*")) {
-                                        range = islandByOwner.getProtectionSize();
+                                        // Ignore
                                         break;
                                     } else {
-                                        if (DEBUG)
-                                            plugin.getLogger().info("DEBUG: found number perm");
                                         String[] spl = perms.getPermission().split(Settings.PERMPREFIX + "island.range.");
                                         if (spl.length > 1) {
-                                            range = Math.max(range, Integer.valueOf(spl[1]));
+                                            if (!NumberUtils.isDigits(spl[1])) {
+                                                plugin.getLogger().severe("Player " + player.getName() + " has permission: " + perms.getPermission() + " <-- the last part MUST be a number! Ignoring...");
+                                            } else {
+                                                if (DEBUG)
+                                                    plugin.getLogger().info("DEBUG: found number perm");
+                                                hasARangePerm = true;
+                                                range = Math.max(range, Integer.valueOf(spl[1]));
+                                                if (DEBUG)
+                                                    plugin.getLogger().info("DEBUG: highest range is " + range);
+                                            }
                                         }
                                     }
                                 }
                             }
-                            // Do some sanity checking
-                            if (range % 2 != 0) {
-                                range--;
+                            // Only set the island range if the player has a perm to override the default
+                            if (hasARangePerm) {
+                                // Do some sanity checking
+                                if (range > Settings.islandDistance) {
+                                    range = Settings.islandDistance;
+                                }
+                                if (range % 2 != 0) {
+                                    range--;
+                                    if (DEBUG)
+                                        plugin.getLogger().warning("Login range setting: Protection range must be even, using " + range + " for " + player.getName());
+                                }
                                 if (DEBUG)
-                                    plugin.getLogger().warning("Login range setting: Protection range must be even, using " + range + " for " + player.getName());
+                                    plugin.getLogger().info("DEBUG: final range is " + range + " island protection size = " + islandByOwner.getProtectionSize());
+                                // Range can go up or down
+                                if (range != islandByOwner.getProtectionSize()) {
+                                    plugin.getMessages().storeMessage(playerUUID, plugin.myLocale(playerUUID).adminSetRangeUpdated.replace("[number]", String.valueOf(range)));
+                                    plugin.getLogger().info(
+                                            "Login range setting: Island protection range changed from " + islandByOwner.getProtectionSize() + " to "
+                                                    + range + " for " + player.getName() + " due to permission.");
+                                }
+                                islandByOwner.setProtectionSize(range);
                             }
-                            if (range > (Settings.islandDistance - 16) && !plugin.getConfig().getBoolean("island.overridelimit", false)) {
-                                range = Settings.islandDistance - 16;
-                                if (DEBUG)
-                                    plugin.getLogger().warning("Login range setting: Island protection range must be " + (Settings.islandDistance - 16) + " or less, (island range -16). Setting to: "+ range);
-                            }
-                            if (range > islandByOwner.getProtectionSize()) {
-                                plugin.getLogger().info(
-                                        "Login range setting: Island protection range increased from " + islandByOwner.getProtectionSize() + " to "
-                                                + range + " for " + player.getName() + " due to permission.");
-                            }
-                            islandByOwner.setProtectionSize(range);
                         }
                     }
                 }
             }
         }
-        // Run the level command if it's free to do so
-        if (DEBUG)
-            plugin.getLogger().info("DEBUG: Run level calc?");
+        // Run the level command
         if (Settings.loginLevel) {
             if (DEBUG)
-                plugin.getLogger().info("DEBUG: Yes");
-            if (Settings.fastLevelCalc) {
-                if (DEBUG)
-                    plugin.getLogger().info("DEBUG: Fast calc");
-                new LevelCalcByChunk(plugin, playerUUID, player, false);
-            } else {
-                if (DEBUG)
-                    plugin.getLogger().info("DEBUG: slow calc");
-                if (!plugin.isCalculatingLevel()) {
-                    // This flag is true if the command can be used
-                    if (DEBUG)
-                        plugin.getLogger().info("DEBUG: calculating");
-                    plugin.setCalculatingLevel(true);
-                    LevelCalc levelCalc = new LevelCalc(plugin, playerUUID, player, false);
-                    levelCalc.runTaskTimer(plugin, 0L, 10L);
-                }
-            }
+                plugin.getLogger().info("DEBUG: Run level calc");
+            new LevelCalcByChunk(plugin, plugin.getGrid().getIsland(playerUUID), playerUUID, player, false);
+        }
+        // Reset resets if the admin changes it to or from unlimited
+        if (Settings.resetLimit < players.getResetsLeft(playerUUID)  || (Settings.resetLimit >= 0 && players.getResetsLeft(playerUUID) < 0)) {
+            players.setResetsLeft(playerUUID, Settings.resetLimit);
         }
         if (DEBUG)
             plugin.getLogger().info("DEBUG: Setting player's name");
@@ -297,8 +293,8 @@ public class JoinLeaveEvents implements Listener {
         if (DEBUG)
             plugin.getLogger().info("DEBUG: Saving player");
         players.save(playerUUID);
-        
-        
+
+
         if (Settings.logInRemoveMobs) {
             if (DEBUG)
                 plugin.getLogger().info("DEBUG: Removing mobs");
@@ -321,23 +317,43 @@ public class JoinLeaveEvents implements Listener {
                     && !VaultHelper.checkPerm(player, Settings.PERMPREFIX + "mod.bypassprotect")) {
                 if (DEBUG)
                     plugin.getLogger().info("DEBUG: No bypass - teleporting");
-                player.sendMessage(ChatColor.RED + plugin.myLocale(playerUUID).lockIslandLocked);
+                Util.sendMessage(player, ChatColor.RED + plugin.myLocale(playerUUID).lockIslandLocked);
                 plugin.getGrid().homeTeleport(player);
             }
         }
+
         if (DEBUG)
             plugin.getLogger().info("DEBUG: Setting the player's level in chat listener");
         // Set the player's level
         plugin.getChatListener().setPlayerLevel(playerUUID, plugin.getPlayers().getIslandLevel(player.getUniqueId()));
-        
+
         if (DEBUG)
             plugin.getLogger().info("DEBUG: Remove from top ten if excluded");
         // Remove from TopTen if the player has the permission
         if (!player.hasPermission(Settings.PERMPREFIX + "intopten")) {
             if (DEBUG)
                 plugin.getLogger().info("DEBUG: Removing from top ten");
-            TopTen.topTenRemoveEntry(playerUUID);
+            plugin.getTopTen().topTenRemoveEntry(playerUUID);
         }
+        // Load any messages for the player
+        if (DEBUG)
+            plugin.getLogger().info("DEBUG: checking messages for " + player.getName());
+        final List<String> messages = plugin.getMessages().getMessages(playerUUID);
+        if (messages != null) {
+            if (DEBUG)
+                plugin.getLogger().info("DEBUG: Messages waiting!");
+            plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+                Util.sendMessage(player, ChatColor.AQUA + plugin.myLocale(playerUUID).newsHeadline);
+                int i = 1;
+                for (String message : messages) {
+                    Util.sendMessage(player, i++ + ": " + message);
+                }
+                // Clear the messages
+                plugin.getMessages().clearMessages(playerUUID);
+            }, 40L);
+        } // else {
+        // plugin.getLogger().info("no messages");
+        // }
         if (DEBUG)
             plugin.getLogger().info("DEBUG: Log in completed, passing to other plugins.");
     }
@@ -346,7 +362,7 @@ public class JoinLeaveEvents implements Listener {
     public void onPlayerQuit(final PlayerQuitEvent event) {
         // Remove from TopTen if the player has the permission
         if (!event.getPlayer().hasPermission(Settings.PERMPREFIX + "intopten")) {
-            TopTen.topTenRemoveEntry(event.getPlayer().getUniqueId());
+            plugin.getTopTen().topTenRemoveEntry(event.getPlayer().getUniqueId());
         }
         // Remove from coop list
         if (!Settings.persistantCoops) {
@@ -358,34 +374,6 @@ public class JoinLeaveEvents implements Listener {
         // plugin.setMessage(event.getPlayer().getUniqueId(),
         // "Hello! This is a test. You logged out");
         players.removeOnlinePlayer(event.getPlayer().getUniqueId());
-    }
-
-    /**
-     * Attempts to get the player's language
-     * @param p
-     * @return language or empty string
-     */
-    public String getLanguage(Player p){
-        Object ep;
-        try {
-            ep = getMethod("getHandle", p.getClass()).invoke(p, (Object[]) null);
-            Field f = ep.getClass().getDeclaredField("locale");
-            f.setAccessible(true);
-            String language = (String) f.get(ep);
-            language.replace('_', '-');
-            return language;
-        } catch (Exception e) {
-            //nothing
-        }
-        return "en-US";
-    }
-
-    private Method getMethod(String name, Class<?> clazz) {
-        for (Method m : clazz.getDeclaredMethods()) {
-            if (m.getName().equals(name))
-                return m;
-        }
-        return null;
     }
 
 }

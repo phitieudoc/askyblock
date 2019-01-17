@@ -17,22 +17,37 @@
 package com.wasteofplastic.askyblock.listeners;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
+import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
+import org.bukkit.entity.Animals;
 import org.bukkit.entity.EnderCrystal;
 import org.bukkit.entity.EntityType;
+import org.bukkit.entity.IronGolem;
+import org.bukkit.entity.Monster;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Projectile;
+import org.bukkit.entity.Slime;
+import org.bukkit.entity.Snowman;
+import org.bukkit.entity.Squid;
+import org.bukkit.entity.Villager;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.block.Action;
 import org.bukkit.event.block.EntityBlockFormEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
+import org.bukkit.event.entity.EntityDamageEvent.DamageCause;
 import org.bukkit.event.entity.EntityExplodeEvent;
+import org.bukkit.event.entity.LingeringPotionSplashEvent;
+import org.bukkit.event.player.PlayerFishEvent;
 import org.bukkit.event.player.PlayerInteractAtEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
@@ -40,11 +55,12 @@ import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.projectiles.ProjectileSource;
 import org.bukkit.scoreboard.Scoreboard;
+import org.bukkit.scoreboard.ScoreboardManager;
 import org.bukkit.scoreboard.Team;
 
 import com.wasteofplastic.askyblock.ASkyBlock;
 import com.wasteofplastic.askyblock.Island;
-import com.wasteofplastic.askyblock.Island.Flags;
+import com.wasteofplastic.askyblock.Island.SettingsFlag;
 import com.wasteofplastic.askyblock.Settings;
 import com.wasteofplastic.askyblock.util.Util;
 import com.wasteofplastic.askyblock.util.VaultHelper;
@@ -56,21 +72,24 @@ import com.wasteofplastic.askyblock.util.VaultHelper;
  */
 public class IslandGuard1_9 implements Listener {
     private final ASkyBlock plugin;
-    private final static boolean DEBUG = false;
-    private final static String NO_PUSH_TEAM_NAME = "ASkyBlockNP";
+    private static final String NO_PUSH_TEAM_NAME = "ASkyBlockNP";
     private Scoreboard scoreboard;
-    private Team pushTeam;
+    private final Map<Integer, UUID> thrownPotions;
 
     public IslandGuard1_9(final ASkyBlock plugin) {
         this.plugin = plugin;
+        this.thrownPotions = new HashMap<>();
         if (!Settings.allowPushing) {
             // try to remove the team from the scoreboard
             try {
-                scoreboard = plugin.getServer().getScoreboardManager().getMainScoreboard();
-                if (scoreboard != null) {
-                    Team pTeam = scoreboard.getTeam(NO_PUSH_TEAM_NAME);
-                    if (pTeam != null) {
-                        pTeam.unregister();
+                ScoreboardManager manager = plugin.getServer().getScoreboardManager();
+                if (manager != null) {
+                    Scoreboard scoreboard = manager.getMainScoreboard();
+                    if (scoreboard != null) {
+                        Team pTeam = scoreboard.getTeam(NO_PUSH_TEAM_NAME);
+                        if (pTeam != null) {
+                            pTeam.unregister();
+                        }
                     }
                 }
             } catch (Exception e) {
@@ -81,13 +100,10 @@ public class IslandGuard1_9 implements Listener {
 
     /**
      * Handles Frost Walking on visitor's islands
-     * @param e
+     * @param e - event
      */
     @EventHandler(priority = EventPriority.LOW, ignoreCancelled=true)
-    public void onBlockForm(EntityBlockFormEvent e) {
-        if (DEBUG) {
-            plugin.getLogger().info("1.9 " +e.getEventName());
-        }
+    public void onBlockForm(final EntityBlockFormEvent e) {
         if (e.getEntity() instanceof Player && e.getNewState().getType().equals(Material.FROSTED_ICE)) {
             Player player= (Player) e.getEntity();
             if (!IslandGuard.inWorld(player)) {
@@ -102,15 +118,12 @@ public class IslandGuard1_9 implements Listener {
             }
             // Check island
             Island island = plugin.getGrid().getIslandAt(player.getLocation());
+            if (island == null && Settings.defaultWorldSettings.get(SettingsFlag.PLACE_BLOCKS)) {
+                return;
+            }
             if (island !=null) {
-                if (island.isSpawn()) {
-                    if (Settings.allowSpawnPlaceBlocks) {
-                        return;
-                    }
-                } else {
-                    if (island.getMembers().contains(player.getUniqueId()) || island.getIgsFlag(Flags.allowPlaceBlocks)) {
-                        return;
-                    }
+                if (island.getMembers().contains(player.getUniqueId()) || island.getIgsFlag(SettingsFlag.PLACE_BLOCKS)) {
+                    return;
                 }
             }
             // Silently cancel the event
@@ -122,13 +135,10 @@ public class IslandGuard1_9 implements Listener {
     /**
      * Handle interaction with end crystals 1.9
      * 
-     * @param e
+     * @param e - event
      */
     @EventHandler(priority = EventPriority.LOW, ignoreCancelled=true)
     public void onHitEndCrystal(final PlayerInteractAtEntityEvent e) {
-        if (DEBUG) {
-            plugin.getLogger().info("1.9 " +e.getEventName());
-        }
         if (!IslandGuard.inWorld(e.getPlayer())) {
             return;
         }
@@ -142,30 +152,24 @@ public class IslandGuard1_9 implements Listener {
         if (e.getRightClicked() != null && e.getRightClicked().getType().equals(EntityType.ENDER_CRYSTAL)) {
             // Check island
             Island island = plugin.getGrid().getIslandAt(e.getRightClicked().getLocation());
+            if (island == null && Settings.defaultWorldSettings.get(SettingsFlag.BREAK_BLOCKS)) {
+                return;
+            }
             if (island !=null) {
-                if (island.isSpawn()) {
-                    if (Settings.allowSpawnBreakBlocks) {
-                        return;
-                    }
-                } else {
-                    if (island.getMembers().contains(e.getPlayer().getUniqueId()) || island.getIgsFlag(Flags.allowBreakBlocks)) {
-                        return;
-                    }
+                if (island.getMembers().contains(e.getPlayer().getUniqueId()) || island.getIgsFlag(SettingsFlag.BREAK_BLOCKS)) {
+                    return;
                 }
             }
             e.setCancelled(true);
-            e.getPlayer().sendMessage(ChatColor.RED + plugin.myLocale(e.getPlayer().getUniqueId()).islandProtected);
+            Util.sendMessage(e.getPlayer(), ChatColor.RED + plugin.myLocale(e.getPlayer().getUniqueId()).islandProtected);
         }
     }
 
     // End crystal
     @SuppressWarnings("deprecation")
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled=true)
-    void placeEndCrystalEvent(PlayerInteractEvent e) {
+    void placeEndCrystalEvent(final PlayerInteractEvent e) {
         Player p = e.getPlayer();
-        if (DEBUG) {
-            plugin.getLogger().info("1.9 " +"End crystal place " + e.getEventName());
-        }
         if (!IslandGuard.inWorld(p)) {
             return;
         }
@@ -175,61 +179,52 @@ public class IslandGuard1_9 implements Listener {
         }
 
         // Check if they are holding armor stand
-        ItemStack inHand = e.getPlayer().getItemInHand();
-        if (inHand != null && inHand.getType().equals(Material.END_CRYSTAL)) {
-            // Check island
-            Island island = plugin.getGrid().getIslandAt(e.getPlayer().getLocation());
-            if (island !=null && (island.getMembers().contains(p.getUniqueId()) || island.getIgsFlag(Flags.allowPlaceBlocks))) {
-                //plugin.getLogger().info("1.9 " +"DEBUG: armor stand place check");
-                if (Settings.limitedBlocks.containsKey("END_CRYSTAL") && Settings.limitedBlocks.get("END_CRYSTAL") > -1) {
-                    //plugin.getLogger().info("1.9 " +"DEBUG: count armor stands");
-                    int count = island.getTileEntityCount(Material.END_CRYSTAL);
-                    //plugin.getLogger().info("1.9 " +"DEBUG: count is " + count + " limit is " + Settings.limitedBlocks.get("ARMOR_STAND"));
-                    if (Settings.limitedBlocks.get("END_CRYSTAL") <= count) {
-                        e.getPlayer().sendMessage(ChatColor.RED + (plugin.myLocale(e.getPlayer().getUniqueId()).entityLimitReached.replace("[entity]",
-                                Util.prettifyText(Material.END_CRYSTAL.toString()))).replace("[number]", String.valueOf(Settings.limitedBlocks.get("END_CRYSTAL"))));
-                        e.setCancelled(true);
-                        return;
-                    }
+        for (ItemStack inHand : Util.getPlayerInHandItems(e.getPlayer())) {
+            if (inHand.getType().equals(Material.END_CRYSTAL)) {
+                // Check island
+                Island island = plugin.getGrid().getIslandAt(e.getPlayer().getLocation());
+                if (island == null && Settings.defaultWorldSettings.get(SettingsFlag.PLACE_BLOCKS)) {
+                    return;
                 }
-                return;
+                if (island !=null && (island.getMembers().contains(p.getUniqueId()) || island.getIgsFlag(SettingsFlag.PLACE_BLOCKS))) {
+                    //plugin.getLogger().info("1.9 " +"DEBUG: armor stand place check");
+                    if (Settings.limitedBlocks.containsKey("END_CRYSTAL") && Settings.limitedBlocks.get("END_CRYSTAL") > -1) {
+                        //plugin.getLogger().info("1.9 " +"DEBUG: count armor stands");
+                        int count = island.getTileEntityCount(Material.END_CRYSTAL,e.getPlayer().getWorld());
+                        //plugin.getLogger().info("1.9 " +"DEBUG: count is " + count + " limit is " + Settings.limitedBlocks.get("ARMOR_STAND"));
+                        if (Settings.limitedBlocks.get("END_CRYSTAL") <= count) {
+                            Util.sendMessage(e.getPlayer(), ChatColor.RED + (plugin.myLocale(e.getPlayer().getUniqueId()).entityLimitReached.replace("[entity]",
+                                    Util.prettifyText(Material.END_CRYSTAL.toString()))).replace("[number]", String.valueOf(Settings.limitedBlocks.get("END_CRYSTAL"))));
+                            e.setCancelled(true);
+                            return;
+                        }
+                    }
+                    return;
+                }
+                // plugin.getLogger().info("1.9 " +"DEBUG: stand place cancelled");
+                e.setCancelled(true);
+                Util.sendMessage(e.getPlayer(), ChatColor.RED + plugin.myLocale(e.getPlayer().getUniqueId()).islandProtected);
+                e.getPlayer().updateInventory();
             }
-            // plugin.getLogger().info("1.9 " +"DEBUG: stand place cancelled");
-            e.setCancelled(true);
-            e.getPlayer().sendMessage(ChatColor.RED + plugin.myLocale(e.getPlayer().getUniqueId()).islandProtected);
-            e.getPlayer().updateInventory();
         }
 
     }
 
     /**
      * Handle end crystal damage by visitors
-     * @param e
+     * @param e - event
      */
     @EventHandler(priority = EventPriority.LOW, ignoreCancelled=true)
-    public void EndCrystalDamage(EntityDamageByEntityEvent e) {
-        if (DEBUG) {
-            plugin.getLogger().info("1.9 " +"IslandGuard 1_9 " + e.getEventName());
-            plugin.getLogger().info("1.9 " +"Entity is " + e.getEntityType());
-        }
+    public void EndCrystalDamage(final EntityDamageByEntityEvent e) {
         if (e.getEntity() == null || !IslandGuard.inWorld(e.getEntity())) {
             return;
         }
         if (!(e.getEntity() instanceof EnderCrystal)) {
-            if (DEBUG) {
-                plugin.getLogger().info("1.9 Entity is not End crystal it is " + e.getEntityType());
-            }
             return;
-        }
-        if (DEBUG) {
-            plugin.getLogger().info("1.9 Damager is " + e.getDamager());
         }
         Player p = null;
         if (e.getDamager() instanceof Player) {
             p = (Player) e.getDamager();
-            if (DEBUG) {
-                plugin.getLogger().info("1.9 Damager is a player");
-            }
         } else if (e.getDamager() instanceof Projectile) {
             // Get the shooter
             Projectile projectile = (Projectile)e.getDamager();
@@ -237,39 +232,24 @@ public class IslandGuard1_9 implements Listener {
             if (shooter instanceof Player) {
                 p = (Player)shooter;
             }
-            if (DEBUG) {
-                plugin.getLogger().info("1.9 " +"Damager is a projectile shot by " + p.getName());
-            }
         }
         if (p != null) {  
             if (p.isOp() || VaultHelper.checkPerm(p, Settings.PERMPREFIX + "mod.bypassprotect")) {
-                if (DEBUG) {
-                    plugin.getLogger().info("1.9 " +"Bypassing protection");
-                }
                 return;
             }
             // Check if on island
             if (plugin.getGrid().playerIsOnIsland(p)) {
-                if (DEBUG) {
-                    plugin.getLogger().info("1.9 " +"Player is on their own island");
-                }
                 return;
             }
             // Check island
             Island island = plugin.getGrid().getIslandAt(e.getEntity().getLocation());
-            if (island != null && island.isSpawn() && Settings.allowSpawnBreakBlocks) {
-                if (DEBUG) {
-                    plugin.getLogger().info("1.9 " +"Spawn and breaking blocks is allowed");
-                }
+            if (island == null && Settings.defaultWorldSettings.get(SettingsFlag.BREAK_BLOCKS)) {
                 return;
             }
-            if (island != null && island.getIgsFlag(Flags.allowBreakBlocks)) {
-                if (DEBUG) {
-                    plugin.getLogger().info("1.9 " +"Visitor is allowed to break blocks");
-                }
+            if (island != null && island.getIgsFlag(SettingsFlag.BREAK_BLOCKS)) {
                 return;
             }
-            p.sendMessage(ChatColor.RED + plugin.myLocale(p.getUniqueId()).islandProtected);
+            Util.sendMessage(p, ChatColor.RED + plugin.myLocale(p.getUniqueId()).islandProtected);
             e.setCancelled(true);
         }
 
@@ -277,18 +257,11 @@ public class IslandGuard1_9 implements Listener {
 
     /**
      * Handles end crystal explosions
-     * @param e
+     * @param e - event
      */
     @EventHandler(priority = EventPriority.LOW, ignoreCancelled = true)
     public void onExplosion(final EntityExplodeEvent e) {
-        if (DEBUG) {
-            plugin.getLogger().info("1.9 " +e.getEventName());
-            plugin.getLogger().info("1.9 " +"Entity exploding is " + e.getEntity());
-        }
         if (e.getEntity() == null || !e.getEntityType().equals(EntityType.ENDER_CRYSTAL)) {
-            if (DEBUG) {
-                plugin.getLogger().info("1.9 " +"Entity is not an END CRYSTAL");
-            }
             return;
         }
 
@@ -301,7 +274,7 @@ public class IslandGuard1_9 implements Listener {
             e.blockList().clear();
         } else {
             if (!Settings.allowChestDamage) {
-                List<Block> toberemoved = new ArrayList<Block>();
+                List<Block> toberemoved = new ArrayList<>();
                 // Save the chest blocks in a list
                 for (Block b : e.blockList()) {
                     switch (b.getType()) {
@@ -331,7 +304,7 @@ public class IslandGuard1_9 implements Listener {
 
     /**
      * Triggers a push protection change or not
-     * @param e
+     * @param e - event
      */
     @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
     public void onPlayerJoin(final PlayerJoinEvent e) {
@@ -347,10 +320,10 @@ public class IslandGuard1_9 implements Listener {
 
     /**
      * Triggers scoreboard cleanup on Quit
-     * @param e
+     * @param e - event
      */
     @EventHandler(priority = EventPriority.NORMAL,ignoreCancelled = true)
-    public void onPlayerQuit(PlayerQuitEvent e)
+    public void onPlayerQuit(final PlayerQuitEvent e)
     {
         if(Settings.allowPushing)
         {
@@ -377,7 +350,7 @@ public class IslandGuard1_9 implements Listener {
             return;
         }
         // Try and get what team the player is on right now
-        pushTeam = scoreboard.getEntryTeam(player.getName());
+        Team pushTeam = scoreboard.getEntryTeam(player.getName());
         if (pushTeam == null) {
             // It doesn't exist yet, so make it
             pushTeam = scoreboard.getTeam(NO_PUSH_TEAM_NAME);
@@ -416,5 +389,199 @@ public class IslandGuard1_9 implements Listener {
             plugin.getLogger().severe(player.getName() + " : " + e.getMessage());
             e.printStackTrace();
         }
+    }
+
+    /**
+     * Handle blocks that need special treatment
+     * Tilling of coarse dirt into dirt using off-hand (regular hand is in 1.8)
+     * Usually prevented because it could lead to an endless supply of dirt with gravel
+     * 
+     * @param e - event
+     */
+    @SuppressWarnings("deprecation")
+    @EventHandler(priority = EventPriority.LOW, ignoreCancelled=true)
+    public void onPlayerInteract(final PlayerInteractEvent e) {
+        if (!e.getAction().equals(Action.RIGHT_CLICK_BLOCK)) {
+            return;
+        }
+        if (!IslandGuard.inWorld(e.getPlayer())) {
+            return;
+        }
+        if (e.getPlayer().isOp()) {
+            return;
+        }
+        // This permission bypasses protection
+        if (VaultHelper.checkPerm(e.getPlayer(), Settings.PERMPREFIX + "mod.bypassprotect")
+                || VaultHelper.checkPerm(e.getPlayer(), Settings.PERMPREFIX + "craft.dirt")) {
+            return;
+        }
+        // Prevents tilling of coarse dirt into dirt
+        ItemStack inHand = e.getPlayer().getInventory().getItemInOffHand();
+        if (inHand.getType() == Material.WOOD_HOE || inHand.getType() == Material.IRON_HOE || inHand.getType() == Material.GOLD_HOE
+                || inHand.getType() == Material.DIAMOND_HOE || inHand.getType() == Material.STONE_HOE) {
+            // plugin.getLogger().info("1.8 " + "DEBUG: hoe in hand");
+            Block block = e.getClickedBlock();
+            // plugin.getLogger().info("1.8 " + "DEBUG: block is " + block.getType() +
+            // ":" + block.getData());
+            // Check if coarse dirt
+            if (block.getType() == Material.DIRT && block.getData() == (byte) 1) {
+                // plugin.getLogger().info("1.8 " + "DEBUG: hitting coarse dirt!");
+                e.setCancelled(true);
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.LOW, ignoreCancelled=true)
+    public void onLingeringPotionSplash(final LingeringPotionSplashEvent e) {
+        if (!IslandGuard.inWorld(e.getEntity().getLocation())) {
+            return;
+        }
+        // Try to get the shooter
+        Projectile projectile = (Projectile) e.getEntity();
+        if (projectile.getShooter() != null && projectile.getShooter() instanceof Player) {
+            UUID uuid = ((Player)projectile.getShooter()).getUniqueId();
+            // Store it and remove it when the effect is gone
+            thrownPotions.put(e.getAreaEffectCloud().getEntityId(), uuid);
+            plugin.getServer().getScheduler().runTaskLater(plugin, new Runnable() {
+
+                @Override
+                public void run() {
+                    thrownPotions.remove(e.getAreaEffectCloud().getEntityId());
+
+                }}, e.getAreaEffectCloud().getDuration());
+        }
+    }
+
+    @EventHandler(priority = EventPriority.LOW, ignoreCancelled=true)
+    public void onLingeringPotionDamage(final EntityDamageByEntityEvent e) {
+        if (!IslandGuard.inWorld(e.getEntity().getLocation())) {
+            return;
+        }
+        if (e.getEntity() == null || e.getEntity().getUniqueId() == null) {
+            return;
+        }
+        if (e.getCause().equals(DamageCause.ENTITY_ATTACK) && thrownPotions.containsKey(e.getDamager().getEntityId())) {
+            UUID attacker = thrownPotions.get(e.getDamager().getEntityId());
+            // Self damage
+            if (attacker.equals(e.getEntity().getUniqueId())) {
+                return;
+            }
+            Island island = plugin.getGrid().getIslandAt(e.getEntity().getLocation());
+            boolean inNether = false;
+            if (e.getEntity().getWorld().equals(ASkyBlock.getNetherWorld())) {
+                inNether = true;
+            }
+            // Monsters being hurt
+            if (e.getEntity() instanceof Monster || e.getEntity() instanceof Slime || e.getEntity() instanceof Squid) {
+                // Normal island check
+                if (island != null && island.getMembers().contains(attacker)) {
+                    // Members always allowed
+                    return;
+                }
+                if (actionAllowed(attacker, e.getEntity().getLocation(), SettingsFlag.HURT_MONSTERS)) {
+                    return;
+                }
+                // Not allowed
+                e.setCancelled(true);
+                return;
+            }
+
+            // Mobs being hurt
+            if (e.getEntity() instanceof Animals || e.getEntity() instanceof IronGolem || e.getEntity() instanceof Snowman
+                    || e.getEntity() instanceof Villager) {
+                if (island != null && (island.getIgsFlag(SettingsFlag.HURT_MOBS) || island.getMembers().contains(attacker))) {
+                    return;
+                }
+                e.setCancelled(true);
+                return;
+            }
+
+            // Establish whether PVP is allowed or not.
+            boolean pvp = false;
+            if ((inNether && island != null && island.getIgsFlag(SettingsFlag.NETHER_PVP) || (!inNether && island != null && island.getIgsFlag(SettingsFlag.PVP)))) {
+                pvp = true;
+            }
+
+            // Players being hurt PvP
+            if (e.getEntity() instanceof Player) {
+                if (pvp) {
+                } else {
+                    e.setCancelled(true);
+                }
+            }
+        }
+    }
+
+    
+
+    @EventHandler(priority = EventPriority.LOW, ignoreCancelled=true)
+    public void onRodDamage(final PlayerFishEvent e) {
+        if (e.getPlayer().isOp() || VaultHelper.checkPerm(e.getPlayer(), Settings.PERMPREFIX + "mod.bypassprotect")) {
+            return;
+        }
+        if (!IslandGuard.inWorld(e.getPlayer().getLocation())) {
+            return;
+        }
+        Player p = e.getPlayer();
+        if (e.getCaught() != null && (e.getCaught().getType().equals(EntityType.ARMOR_STAND) || e.getCaught().getType().equals(EntityType.ENDER_CRYSTAL))) {
+            if (p.isOp() || VaultHelper.checkPerm(p, Settings.PERMPREFIX + "mod.bypassprotect")) {
+                return;
+            }
+            // Check if on island
+            if (plugin.getGrid().playerIsOnIsland(p)) {
+                return;
+            }
+            // Check island
+            Island island = plugin.getGrid().getIslandAt(e.getCaught().getLocation());
+            if (island == null && Settings.defaultWorldSettings.get(SettingsFlag.BREAK_BLOCKS)) {
+                return;
+            }
+            if (island != null && island.getIgsFlag(SettingsFlag.BREAK_BLOCKS)) {
+                return;
+            }
+            Util.sendMessage(p, ChatColor.RED + plugin.myLocale(p.getUniqueId()).islandProtected);
+            e.getHook().remove();
+            e.setCancelled(true);
+        }
+    }
+    
+    /**
+     * Checks if action is allowed for player in location for flag
+     * @param uuid
+     * @param location
+     * @param flag
+     * @return true if allowed
+     */
+    private boolean actionAllowed(UUID uuid, Location location, SettingsFlag flag) {
+        Player player = plugin.getServer().getPlayer(uuid);
+        if (player == null) {
+            return actionAllowed(location, flag);
+        }
+        // This permission bypasses protection
+        if (player.isOp() || VaultHelper.checkPerm(player, Settings.PERMPREFIX + "mod.bypassprotect")) {
+            return true;
+        }
+        Island island = plugin.getGrid().getProtectedIslandAt(location);
+        if (island != null && (island.getIgsFlag(flag) || island.getMembers().contains(player.getUniqueId()))){
+            return true;
+        }
+        if (island == null && Settings.defaultWorldSettings.get(flag)) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Action allowed in this location
+     * @param location
+     * @param flag
+     * @return true if allowed
+     */
+    private boolean actionAllowed(Location location, SettingsFlag flag) {
+        Island island = plugin.getGrid().getProtectedIslandAt(location);
+        if (island != null && island.getIgsFlag(flag)){
+            return true;
+        }
+        return island == null && Settings.defaultWorldSettings.get(flag);
     }
 }

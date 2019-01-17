@@ -21,14 +21,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import net.minecraft.server.v1_8_R3.BlockPosition;
-import net.minecraft.server.v1_8_R3.IBlockData;
-//import net.minecraft.server.v1_8_R3.EnumSkyBlock;
-import net.minecraft.server.v1_8_R3.NBTTagCompound;
-import net.minecraft.server.v1_8_R3.NBTTagList;
-import net.minecraft.server.v1_8_R3.NBTTagString;
-import net.minecraft.server.v1_8_R3.TileEntityFlowerPot;
-
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -47,6 +39,14 @@ import com.wasteofplastic.org.jnbt.ListTag;
 import com.wasteofplastic.org.jnbt.StringTag;
 import com.wasteofplastic.org.jnbt.Tag;
 
+import net.minecraft.server.v1_8_R3.BlockPosition;
+import net.minecraft.server.v1_8_R3.IBlockData;
+//import net.minecraft.server.v1_8_R3.EnumSkyBlock;
+import net.minecraft.server.v1_8_R3.NBTTagCompound;
+import net.minecraft.server.v1_8_R3.NBTTagList;
+import net.minecraft.server.v1_8_R3.NBTTagString;
+import net.minecraft.server.v1_8_R3.TileEntityFlowerPot;
+
 public class NMSHandler implements NMSAbstraction {
 
     @Override
@@ -56,23 +56,12 @@ public class NMSHandler implements NMSAbstraction {
         BlockPosition bp = new BlockPosition(b.getX(), b.getY(), b.getZ());
         int combined = blockId + (data << 12);
         IBlockData ibd = net.minecraft.server.v1_8_R3.Block.getByCombinedId(combined);
-        /*
         if (applyPhysics) {
             w.setTypeAndData(bp, ibd, 3); 
         } else {
             w.setTypeAndData(bp, ibd, 2); 
         }
-         */
         chunk.a(bp, ibd);
-        if (applyPhysics) {
-            net.minecraft.server.v1_8_R3.Block block = chunk.getType(bp);
-            w.update(bp, block);
-        } 
-
-        // Recalculate lighting
-        //w.c(bp,true);
-        //w.c(EnumSkyBlock.SKY, bp);
-        //w.c(bp);
     }
 
     @Override

@@ -52,7 +52,7 @@ import com.wasteofplastic.askyblock.util.Util;
  */
 public class AcidInventory implements Listener {
     private final ASkyBlock plugin;
-    private List<String> lore = new ArrayList<String>();
+    private List<String> lore = new ArrayList<>();
     private final static boolean DEBUG = false;
 
     public AcidInventory(ASkyBlock aSkyBlock) {
@@ -62,9 +62,9 @@ public class AcidInventory implements Listener {
     /**
      * This covers items in a chest, etc. inventory, then change the name then
      * 
-     * @param e
+     * @param e - event
      */
-    @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = false)
+    @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
     public void onInventoryOpen(InventoryOpenEvent e) {
         if (DEBUG)
             plugin.getLogger().info("DEBUG: " + e.getEventName());
@@ -130,9 +130,9 @@ public class AcidInventory implements Listener {
     /**
      * If the player filled up the bucket themselves
      * 
-     * @param e
+     * @param e - event
      */
-    @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = false)
+    @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
     public void onBucketFill(PlayerBucketFillEvent e) {
         if (DEBUG)
             plugin.getLogger().info("Player filled the bucket");
@@ -155,9 +155,9 @@ public class AcidInventory implements Listener {
     /**
      * Checks to see if a player is drinking acid
      * 
-     * @param e
+     * @param e - event
      */
-    @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = false)
+    @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
     public void onWaterBottleDrink(final PlayerItemConsumeEvent e) {
         if (Settings.acidDamage == 0D || !Settings.acidBottle)
             return;
@@ -176,7 +176,7 @@ public class AcidInventory implements Listener {
                 plugin.getLogger().info(e.getPlayer().getName() + " " + plugin.myLocale().drankAcidAndDied);
                 if (!Settings.muteDeathMessages) {
                     for (Player p : plugin.getServer().getOnlinePlayers()) {
-                        p.sendMessage(e.getPlayer().getDisplayName() + " " + plugin.myLocale(p.getUniqueId()).drankAcid);
+                        Util.sendMessage(p, e.getPlayer().getName() + " " + plugin.myLocale(p.getUniqueId()).drankAcid);
                     }
                 }
                 final ItemStack item = new ItemStack(Material.GLASS_BOTTLE);
@@ -191,9 +191,9 @@ public class AcidInventory implements Listener {
      * This event makes sure that any acid bottles become potions without the
      * warning
      * 
-     * @param e
+     * @param e - event
      */
-    @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = false)
+    @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
     public void onBrewComplete(final BrewEvent e) {
         if (DEBUG)
             plugin.getLogger().info("DEBUG: " + e.getEventName());
@@ -220,7 +220,7 @@ public class AcidInventory implements Listener {
     /**
      * Event that covers filling a bottle
      */
-    @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = false)
+    @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
     public void onWaterBottleFill(final PlayerInteractEvent e) {
         if (DEBUG)
             plugin.getLogger().info("DEBUG: " + e.getEventName());

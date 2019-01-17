@@ -36,9 +36,9 @@ import com.wasteofplastic.askyblock.Settings;
  *         Creates the world
  */
 public class ChunkGeneratorWorld extends ChunkGenerator {
-    Random rand = new Random();
-    PerlinOctaveGenerator gen;
-    ASkyBlock plugin = ASkyBlock.getPlugin();
+    private Random rand = new Random();
+    private PerlinOctaveGenerator gen;
+    private final ASkyBlock plugin = ASkyBlock.getPlugin();
 
     @SuppressWarnings("deprecation")
     public byte[][] generateBlockSections(World world, Random random, int chunkX, int chunkZ, BiomeGrid biomeGrid) {
@@ -48,12 +48,12 @@ public class ChunkGeneratorWorld extends ChunkGenerator {
             return generateNetherBlockSections(world, random, chunkX, chunkZ, biomeGrid);
         }
         byte[][] result = new byte[world.getMaxHeight() / 16][];
-        if (Settings.sea_level == 0) {
+        if (Settings.seaHeight == 0) {
             return result;
         } else {
             for (int x = 0; x < 16; x++) {
                 for (int z = 0; z < 16; z++) {
-                    for (int y = 0; y < Settings.sea_level; y++) {
+                    for (int y = 0; y < Settings.seaHeight; y++) {
                         setBlock(result, x, y, z, (byte) Material.STATIONARY_WATER.getId()); // Stationary
                         // Water
                         // Allows stuff to fall through into oblivion, thus
@@ -144,7 +144,7 @@ public class ChunkGeneratorWorld extends ChunkGenerator {
                     }
                     // Next three layers are a mix of netherrack and air
                     for (int y = 5; y < 8; y++) {
-                        double r = gen.noise(x, maxHeight - y, z, 0.5, 0.5);
+                        double r = gen.noise(x, (double)maxHeight - y, z, 0.5, 0.5);
                         if (r > 0D) {
                             setBlock(result, x, (maxHeight - y), z, (byte) Material.NETHERRACK.getId());
                         } else {
@@ -152,7 +152,7 @@ public class ChunkGeneratorWorld extends ChunkGenerator {
                         }
                     }
                     // Layer 8 may be glowstone
-                    double r = gen.noise(x, maxHeight - 8, z, random.nextFloat(), random.nextFloat());
+                    double r = gen.noise(x, (double)maxHeight - 8, z, random.nextFloat(), random.nextFloat());
                     if (r > 0.5D) {
                         // Have blobs of glowstone
                         switch (random.nextInt(4)) {
@@ -171,6 +171,7 @@ public class ChunkGeneratorWorld extends ChunkGenerator {
                             for (int i = 0; i < random.nextInt(10); i++) {
                                 setBlock(result, x, (maxHeight - 8 - i), z, (byte) Material.GLOWSTONE.getId());
                             }
+                            break;
                         case 3:
                             setBlock(result, x, (maxHeight - 8), z, (byte) Material.GLOWSTONE.getId());
                             if (x > 3 && z > 3) {

@@ -19,10 +19,11 @@ package com.wasteofplastic.askyblock.schematics;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -67,8 +68,10 @@ import org.bukkit.util.Vector;
 import com.wasteofplastic.askyblock.ASkyBlock;
 import com.wasteofplastic.askyblock.Settings;
 import com.wasteofplastic.askyblock.Settings.GameType;
+import com.wasteofplastic.askyblock.commands.IslandCmd;
 import com.wasteofplastic.askyblock.nms.NMSAbstraction;
 import com.wasteofplastic.askyblock.util.Util;
+import com.wasteofplastic.askyblock.util.VaultHelper;
 import com.wasteofplastic.org.jnbt.ByteArrayTag;
 import com.wasteofplastic.org.jnbt.ByteTag;
 import com.wasteofplastic.org.jnbt.CompoundTag;
@@ -79,6 +82,8 @@ import com.wasteofplastic.org.jnbt.NBTInputStream;
 import com.wasteofplastic.org.jnbt.ShortTag;
 import com.wasteofplastic.org.jnbt.StringTag;
 import com.wasteofplastic.org.jnbt.Tag;
+
+import net.milkbowl.vault.economy.EconomyResponse;
 
 public class Schematic {
     private ASkyBlock plugin;
@@ -127,6 +132,21 @@ public class Schematic {
     private int durability;
     private int levelHandicap;
     private double cost;
+    // The reason why this schematic is being pasted
+    public enum PasteReason {
+        /**
+         * This is a new island
+         */
+        NEW_ISLAND,
+        /**
+         * This is a partner island
+         */
+        PARTNER,
+        /**
+         * This is a reset
+         */
+        RESET
+    };
 
     public Schematic(ASkyBlock plugin) {
         this.plugin = plugin;
@@ -292,7 +312,7 @@ public class Schematic {
 
             Map<String, Tag> schematic = schematicTag.getValue();
 
-            Vector origin = null;
+            Vector origin = new Vector(0,0,0);
             try {
                 int originX = getChildTag(schematic, "WEOriginX", IntTag.class).getValue();
                 int originY = getChildTag(schematic, "WEOriginY", IntTag.class).getValue();
@@ -386,10 +406,14 @@ public class Schematic {
                             List<Tag> pos = new ArrayList<Tag>();
                             pos = ((ListTag) entry.getValue()).getValue();
                             //Bukkit.getLogger().info("DEBUG pos: " + pos);
-                            double x = (double)pos.get(0).getValue() - origin.getX();
-                            double y = (double)pos.get(1).getValue() - origin.getY();
-                            double z = (double)pos.get(2).getValue() - origin.getZ();
-                            ent.setLocation(new BlockVector(x,y,z));
+                            if (pos.size() == 3) {                               
+                                double x = (double)pos.get(0).getValue() - origin.getX();
+                                double y = (double)pos.get(1).getValue() - origin.getY();
+                                double z = (double)pos.get(2).getValue() - origin.getZ();
+                                ent.setLocation(new BlockVector(x,y,z));
+                            } else {
+                                ent.setLocation(new BlockVector(0,0,0));
+                            }
                         }
                     } else if (entry.getKey().equals("Motion")) {
                         //Bukkit.getLogger().info("DEBUG Pos fond");
@@ -398,8 +422,12 @@ public class Schematic {
                             List<Tag> pos = new ArrayList<Tag>();
                             pos = ((ListTag) entry.getValue()).getValue();
                             //Bukkit.getLogger().info("DEBUG pos: " + pos);
-                            ent.setMotion(new Vector((double)pos.get(0).getValue(), (double)pos.get(1).getValue()
-                                    ,(double)pos.get(2).getValue()));
+                            if (pos.size() == 3) {
+                                ent.setMotion(new Vector((double)pos.get(0).getValue(), (double)pos.get(1).getValue()
+                                        ,(double)pos.get(2).getValue()));
+                            } else {
+                                ent.setMotion(new Vector(0,0,0));
+                            }
                         }
                     } else if (entry.getKey().equals("Rotation")) {
                         //Bukkit.getLogger().info("DEBUG Pos fond");
@@ -408,8 +436,13 @@ public class Schematic {
                             List<Tag> pos = new ArrayList<Tag>();
                             pos = ((ListTag) entry.getValue()).getValue();
                             //Bukkit.getLogger().info("DEBUG pos: " + pos);
-                            ent.setYaw((float)pos.get(0).getValue());
-                            ent.setPitch((float)pos.get(1).getValue());
+                            if (pos.size() == 2) {
+                                ent.setYaw((float)pos.get(0).getValue());
+                                ent.setPitch((float)pos.get(1).getValue());
+                            } else {
+                                ent.setYaw(0F);
+                                ent.setPitch(0F);
+                            }
                         }
                     } else if (entry.getKey().equals("Color")) {
                         if (entry.getValue() instanceof ByteTag) {
@@ -550,9 +583,6 @@ public class Schematic {
             for (int y = 0; y < height; ++y) {
                 for (int z = 0; z < length; ++z) {
                     int index = y * width * length + z * width + x;
-                    // Bukkit.getLogger().info("DEBUG " + index +
-                    // " changing to ID:"+blocks[index] + " data = " +
-                    // blockData[index]);
                     if (blocks[index] == 7) {
                         // Last bedrock
                         if (bedrock == null || bedrock.getY() < y) {
@@ -755,14 +785,16 @@ public class Schematic {
      */
     /**
      * This method pastes a schematic.
-     * @param loc
-     * @param player
+     * @param loc - where to paste it
+     * @param player - who for
+     * @param teleport - should the player be teleported after pasting?
+     * @param reason - why this was pasted
      */
-    public void pasteSchematic(final Location loc, final Player player, boolean teleport) {
+    public void pasteSchematic(final Location loc, final Player player, boolean teleport, final PasteReason reason) {
         // If this is not a file schematic, paste the default island
         if (this.file == null) {
             if (Settings.GAMETYPE == GameType.ACIDISLAND) {
-                generateIslandBlocks(loc,player);
+                generateIslandBlocks(loc,player, reason);
             } else {
                 loc.getBlock().setType(Material.BEDROCK);
                 ASkyBlock.getPlugin().getLogger().severe("Missing schematic - using bedrock block only");
@@ -978,7 +1010,7 @@ public class Schematic {
                 // BlockFace direction = ((org.bukkit.material.Sign)
                 // sign.getData()).getFacing();
                 //((org.bukkit.material.Sign) sign.getData()).setFacingDirection(BlockFace.NORTH);
-                sign.update();
+                sign.update(true, false);
             }
         }
         if (chest != null) {
@@ -1018,13 +1050,67 @@ public class Schematic {
 
         if (teleport) {
             plugin.getPlayers().setInTeleport(player.getUniqueId(), true);
-            player.teleport(world.getSpawnLocation());
+            //player.setInvulnerable(true);
+            // Check distance. If it's too close, warp to spawn to try to clear the client's cache
+            //plugin.getLogger().info("DEBUG: view dist = " + plugin.getServer().getViewDistance());
+            if (player.getWorld().equals(world)) {
+                //plugin.getLogger().info("DEBUG: same world");
+                int distSq = (int)((player.getLocation().distanceSquared(loc) - ((double)Settings.islandDistance * Settings.islandDistance)/16));
+                //plugin.getLogger().info("DEBUG:  distsq = " + distSq);
+                if (plugin.getServer().getViewDistance() * plugin.getServer().getViewDistance() < distSq) {
+                    //plugin.getLogger().info("DEBUG: teleporting");
+                    player.teleport(world.getSpawnLocation());
+                }
+            }
             plugin.getServer().getScheduler().runTaskLater(plugin, new Runnable() {
 
                 @Override
                 public void run() {
                     plugin.getGrid().homeTeleport(player);
                     plugin.getPlayers().setInTeleport(player.getUniqueId(), false);
+                    // Reset any inventory, etc. This is done AFTER the teleport because other plugins may switch out inventory based on world
+                    plugin.resetPlayer(player);
+                    // Reset money if required
+                    if (Settings.resetMoney) {
+                        resetMoney(player);
+                    }
+                    // Show fancy titles!
+                    if (!Bukkit.getServer().getVersion().contains("(MC: 1.7")) {
+                        if (!plugin.myLocale(player.getUniqueId()).islandSubTitle.isEmpty()) {
+                            //plugin.getLogger().info("DEBUG: title " + player.getName() + " subtitle {\"text\":\"" + plugin.myLocale(player.getUniqueId()).islandSubTitle + "\", \"color\":\"" + plugin.myLocale(player.getUniqueId()).islandSubTitleColor + "\"}");
+                            plugin.getServer().dispatchCommand(plugin.getServer().getConsoleSender(),
+                                    "minecraft:title " + player.getName() + " subtitle {\"text\":\"" + plugin.myLocale(player.getUniqueId()).islandSubTitle.replace("[player]", player.getName()) + "\", \"color\":\"" + plugin.myLocale(player.getUniqueId()).islandSubTitleColor + "\"}");
+                        }
+                        if (!plugin.myLocale(player.getUniqueId()).islandTitle.isEmpty()) {
+                            //plugin.getLogger().info("DEBUG: title " + player.getName() + " title {\"text\":\"" + plugin.myLocale(player.getUniqueId()).islandTitle + "\", \"color\":\"" + plugin.myLocale(player.getUniqueId()).islandTitleColor + "\"}");
+                            plugin.getServer().dispatchCommand(plugin.getServer().getConsoleSender(),
+                                    "minecraft:title " + player.getName() + " title {\"text\":\"" + plugin.myLocale(player.getUniqueId()).islandTitle.replace("[player]", player.getName()) + "\", \"color\":\"" + plugin.myLocale(player.getUniqueId()).islandTitleColor + "\"}");
+                        }
+                        if (!plugin.myLocale(player.getUniqueId()).islandDonate.isEmpty() && !plugin.myLocale(player.getUniqueId()).islandURL.isEmpty()) {
+                            //plugin.getLogger().info("DEBUG: tellraw " + player.getName() + " {\"text\":\"" + plugin.myLocale(player.getUniqueId()).islandDonate + "\",\"color\":\"" + plugin.myLocale(player.getUniqueId()).islandDonateColor + "\",\"clickEvent\":{\"action\":\"open_url\",\"value\":\""
+                            //                + plugin.myLocale(player.getUniqueId()).islandURL + "\"}}");
+                            plugin.getServer().dispatchCommand(
+                                    plugin.getServer().getConsoleSender(),
+                                    "minecraft:tellraw " + player.getName() + " {\"text\":\"" + plugin.myLocale(player.getUniqueId()).islandDonate.replace("[player]", player.getName()) + "\",\"color\":\"" + plugin.myLocale(player.getUniqueId()).islandDonateColor + "\",\"clickEvent\":{\"action\":\"open_url\",\"value\":\""
+                                            + plugin.myLocale(player.getUniqueId()).islandURL + "\"}}");
+                        }
+                    }
+                    if (reason.equals(PasteReason.NEW_ISLAND)) {
+                        // Run any commands that need to be run at the start
+                        //plugin.getLogger().info("DEBUG: First time");
+                        if (!player.hasPermission(Settings.PERMPREFIX + "command.newexempt")) {
+                            //plugin.getLogger().info("DEBUG: Executing new island commands");
+                            IslandCmd.runCommands(Settings.startCommands, player);
+                        }
+                    } else if (reason.equals(PasteReason.RESET)) {
+                        // Run any commands that need to be run at reset
+                        //plugin.getLogger().info("DEBUG: Reset");
+                        if (!player.hasPermission(Settings.PERMPREFIX + "command.resetexempt")) {
+                            //plugin.getLogger().info("DEBUG: Executing reset island commands");
+                            IslandCmd.runCommands(Settings.resetCommands, player);
+                        }
+                    }
+
                 }}, 10L);
 
         }
@@ -1036,6 +1122,17 @@ public class Schematic {
                 }
             }, 40L);
         }
+        // Set the bedrock block meta data to the original spawn location
+        // Doesn't survive a server restart. TODO: change to add this info elsewhere.
+        /*
+        if (playerSpawn != null) {
+            blockToChange = loc.getBlock();
+            if (blockToChange.getType().equals(Material.BEDROCK)) {
+                String spawnLoc = Util.getStringLocation(loc.clone().add(playerSpawn).add(new Vector(0.5D,0D,0.5D)));
+                blockToChange.setMetadata("playerSpawn", new FixedMetadataValue(plugin, spawnLoc));
+            }
+        }
+         */
     }
     /**
      * This method prepares to pastes a schematic.
@@ -1048,11 +1145,6 @@ public class Schematic {
         islandBlocks = new ArrayList<IslandBlock>();
         Map<BlockVector, Map<String, Tag>> tileEntitiesMap = this.getTileEntitiesMap();
         // Start with non-attached blocks
-        //plugin.getLogger().info("DEBUG: attachable size = " + attachable.size());
-        //plugin.getLogger().info("DEBUG: torch = " + Material.TORCH.getId());
-        //plugin.getLogger().info("DEBUG: non attachable");
-        //plugin.getLogger().info("DEBUG: bedrock y = " + bedrock.getBlockY());
-        //int count = 0;
         for (int x = 0; x < width; ++x) {
             for (int y = 0; y < height; ++y) {
                 for (int z = 0; z < length; ++z) {
@@ -1060,8 +1152,8 @@ public class Schematic {
                     // Only bother if this block is above ground zero and 
                     // only bother with air if it is below sea level
                     // TODO: need to check max world height too?
-                    int h = Settings.island_level + y - bedrock.getBlockY();
-                    if (h >= 0 && h < 255 && (blocks[index] != 0 || h < Settings.sea_level)){
+                    int h = Settings.islandHeight + y - bedrock.getBlockY();
+                    if (h >= 0 && h < 255 && (blocks[index] != 0 || h < Settings.seaHeight)){
                         // Only bother if the schematic blocks are within the range that y can be
                         //plugin.getLogger().info("DEBUG: height " + (count++) + ":" +h);
                         IslandBlock block = new IslandBlock(x, y, z);
@@ -1074,6 +1166,7 @@ public class Schematic {
                             }
                             // Tile Entities
                             if (tileEntitiesMap.containsKey(new BlockVector(x, y, z))) {
+                                //plugin.getLogger().info("DEBUG: tile entity = " + Material.getMaterial(block.getTypeId()).name());
                                 if (plugin.isOnePointEight()) {
                                     if (block.getTypeId() == Material.STANDING_BANNER.getId()) {
                                         block.setBanner(tileEntitiesMap.get(new BlockVector(x, y, z)));
@@ -1090,9 +1183,21 @@ public class Schematic {
                                     block.setSpawnerType(tileEntitiesMap.get(new BlockVector(x, y, z)));
                                 } else if ((block.getTypeId() == Material.SIGN_POST.getId())) {
                                     block.setSign(tileEntitiesMap.get(new BlockVector(x, y, z)));
-                                } else if (block.getTypeId() == Material.CHEST.getId()) {
+                                } else if (block.getTypeId() == Material.CHEST.getId()
+                                        || block.getTypeId() == Material.TRAPPED_CHEST.getId()
+                                        || block.getTypeId() == Material.FURNACE.getId()
+                                        || block.getTypeId() == Material.BURNING_FURNACE.getId()
+                                        || block.getTypeId() == Material.DISPENSER.getId()
+                                        || block.getTypeId() == Material.HOPPER.getId()
+                                        || block.getTypeId() == Material.DROPPER.getId()
+                                        || block.getTypeId() == Material.STORAGE_MINECART.getId()
+                                        || block.getTypeId() == Material.HOPPER_MINECART.getId()
+                                        || block.getTypeId() == Material.POWERED_MINECART.getId()
+                                        || Material.getMaterial(block.getTypeId()).name().contains("SHULKER_BOX")
+                                        ) {
+                                    //plugin.getLogger().info("DEBUG: Block is inventory holder, id = " + Material.getMaterial(block.getTypeId()));
                                     block.setChest(nms, tileEntitiesMap.get(new BlockVector(x, y, z)));
-                                }
+                                } 
                             }
                             islandBlocks.add(block);
                         }
@@ -1106,7 +1211,7 @@ public class Schematic {
         for (int x = 0; x < width; ++x) {
             for (int y = 0; y < height; ++y) {
                 for (int z = 0; z < length; ++z) {
-                    int h = Settings.island_level + y - bedrock.getBlockY();
+                    int h = Settings.islandHeight + y - bedrock.getBlockY();
                     if (h >= 0 && h < 255){
                         int index = y * width * length + z * width + x;
                         IslandBlock block = new IslandBlock(x, y, z);
@@ -1207,23 +1312,19 @@ public class Schematic {
      */
     public void setPasteAir(boolean pasteAir) {
         if (!pasteAir) {
-            Iterator<IslandBlock> it = islandBlocks.iterator();
-            while (it.hasNext()) {
-                if (it.next().getTypeId() == 0) {
-                    it.remove();
-                }
-            }
+            islandBlocks.removeIf(b -> b.getTypeId() == 0);
         }
-        //plugin.getLogger().info("DEBUG: islandBlocks after removing air blocks = " + islandBlocks.size());
+        
     }
 
     /**
-     * Creates an island block by block
+     * Creates the AcidIsland default island block by block
      * @param islandLoc
      * @param player
+     * @param reason 
      */
     @SuppressWarnings("deprecation")
-    public void generateIslandBlocks(final Location islandLoc, final Player player) {
+    public void generateIslandBlocks(final Location islandLoc, final Player player, PasteReason reason) {
         // AcidIsland
         // Build island layer by layer
         // Start from the base
@@ -1239,11 +1340,11 @@ public class Schematic {
                 b.setBiome(biome);
             }
         }
-        for (y = 1; y < Settings.island_level + 5; y++) {
+        for (y = 1; y < Settings.islandHeight + 5; y++) {
             for (int x_space = x - 4; x_space <= x + 4; x_space++) {
                 for (int z_space = z - 4; z_space <= z + 4; z_space++) {
                     final Block b = world.getBlockAt(x_space, y, z_space);
-                    if (y < (Settings.island_level / 2)) {
+                    if (y < (Settings.islandHeight / 2)) {
                         b.setType(Material.SANDSTONE);
                     } else {
                         b.setType(Material.SAND);
@@ -1253,7 +1354,7 @@ public class Schematic {
             }
         }
         // Then cut off the corners to make it round-ish
-        for (y = 0; y < Settings.island_level + 5; y++) {
+        for (y = 0; y < Settings.islandHeight + 5; y++) {
             for (int x_space = x - 4; x_space <= x + 4; x_space += 8) {
                 for (int z_space = z - 4; z_space <= z + 4; z_space += 8) {
                     final Block b = world.getBlockAt(x_space, y, z_space);
@@ -1262,7 +1363,7 @@ public class Schematic {
             }
         }
         // Add some grass
-        for (y = Settings.island_level + 4; y < Settings.island_level + 5; y++) {
+        for (y = Settings.islandHeight + 4; y < Settings.islandHeight + 5; y++) {
             for (int x_space = x - 2; x_space <= x + 2; x_space++) {
                 for (int z_space = z - 2; z_space <= z + 2; z_space++) {
                     final Block blockToChange = world.getBlockAt(x_space, y, z_space);
@@ -1272,10 +1373,10 @@ public class Schematic {
         }
         // Place bedrock - MUST be there (ensures island are not
         // overwritten
-        Block b = world.getBlockAt(x, Settings.island_level, z);
+        Block b = world.getBlockAt(x, Settings.islandHeight, z);
         b.setType(Material.BEDROCK);
         // Then add some more dirt in the classic shape
-        y = Settings.island_level + 3;
+        y = Settings.islandHeight + 3;
         for (int x_space = x - 2; x_space <= x + 2; x_space++) {
             for (int z_space = z - 2; z_space <= z + 2; z_space++) {
                 b = world.getBlockAt(x_space, y, z_space);
@@ -1290,7 +1391,7 @@ public class Schematic {
         b.setType(Material.DIRT);
         b = world.getBlockAt(x, y, z + 3);
         b.setType(Material.DIRT);
-        y = Settings.island_level + 2;
+        y = Settings.islandHeight + 2;
         for (int x_space = x - 1; x_space <= x + 1; x_space++) {
             for (int z_space = z - 1; z_space <= z + 1; z_space++) {
                 b = world.getBlockAt(x_space, y, z_space);
@@ -1305,7 +1406,7 @@ public class Schematic {
         b.setType(Material.DIRT);
         b = world.getBlockAt(x, y, z + 2);
         b.setType(Material.DIRT);
-        y = Settings.island_level + 1;
+        y = Settings.islandHeight + 1;
         b = world.getBlockAt(x - 1, y, z);
         b.setType(Material.DIRT);
         b = world.getBlockAt(x + 1, y, z);
@@ -1316,15 +1417,15 @@ public class Schematic {
         b.setType(Material.DIRT);
 
         // Add island items
-        y = Settings.island_level;
+        y = Settings.islandHeight;
         // Add tree (natural)
         final Location treeLoc = new Location(world, x, y + 5D, z);
         world.generateTree(treeLoc, TreeType.ACACIA);
         // Place the cow
-        final Location location = new Location(world, x, (Settings.island_level + 5), z - 2);
+        final Location location = new Location(world, x, (Settings.islandHeight + 5), z - 2);
 
         // Place a helpful sign in front of player
-        Block blockToChange = world.getBlockAt(x, Settings.island_level + 5, z + 3);
+        Block blockToChange = world.getBlockAt(x, Settings.islandHeight + 5, z + 3);
         blockToChange.setType(Material.SIGN_POST);
         Sign sign = (Sign) blockToChange.getState();
         sign.setLine(0, ASkyBlock.getPlugin().myLocale(player.getUniqueId()).signLine1.replace("[player]", player.getName()));
@@ -1332,19 +1433,18 @@ public class Schematic {
         sign.setLine(2, ASkyBlock.getPlugin().myLocale(player.getUniqueId()).signLine3.replace("[player]", player.getName()));
         sign.setLine(3, ASkyBlock.getPlugin().myLocale(player.getUniqueId()).signLine4.replace("[player]", player.getName()));
         ((org.bukkit.material.Sign) sign.getData()).setFacingDirection(BlockFace.NORTH);
-        sign.update();
+        sign.update(true, false);
         // Place the chest - no need to use the safe spawn function
         // because we
         // know what this island looks like
-        blockToChange = world.getBlockAt(x, Settings.island_level + 5, z + 1);
+        blockToChange = world.getBlockAt(x, Settings.islandHeight + 5, z + 1);
         blockToChange.setType(Material.CHEST);
         // Only set if the config has items in it
         if (Settings.chestItems.length > 0) {
-            final Chest chest = (Chest) blockToChange.getState();
+            final InventoryHolder chest = (InventoryHolder) blockToChange.getState();
             final Inventory inventory = chest.getInventory();
-            inventory.clear();
+            //inventory.clear();
             inventory.setContents(Settings.chestItems);
-            chest.update();
         }
         // Fill the chest and orient it correctly (1.8 faces it north!
         DirectionalContainer dc = (DirectionalContainer) blockToChange.getState().getData();
@@ -1352,6 +1452,48 @@ public class Schematic {
         blockToChange.setData(dc.getData(), true);
         // Teleport player
         plugin.getGrid().homeTeleport(player);
+        // Reset any inventory, etc. This is done AFTER the teleport because other plugins may switch out inventory based on world
+        plugin.resetPlayer(player);
+        // Reset money if required
+        if (Settings.resetMoney) {
+            resetMoney(player);
+        }
+        // Show fancy titles!
+        if (!Bukkit.getServer().getVersion().contains("(MC: 1.7")) {
+            if (!plugin.myLocale(player.getUniqueId()).islandSubTitle.isEmpty()) {
+                //plugin.getLogger().info("DEBUG: title " + player.getName() + " subtitle {\"text\":\"" + plugin.myLocale(player.getUniqueId()).islandSubTitle + "\", \"color\":\"" + plugin.myLocale(player.getUniqueId()).islandSubTitleColor + "\"}");
+                plugin.getServer().dispatchCommand(plugin.getServer().getConsoleSender(),
+                        "minecraft:title " + player.getName() + " subtitle {\"text\":\"" + plugin.myLocale(player.getUniqueId()).islandSubTitle.replace("[player]", player.getName()) + "\", \"color\":\"" + plugin.myLocale(player.getUniqueId()).islandSubTitleColor + "\"}");
+            }
+            if (!plugin.myLocale(player.getUniqueId()).islandTitle.isEmpty()) {
+                //plugin.getLogger().info("DEBUG: title " + player.getName() + " title {\"text\":\"" + plugin.myLocale(player.getUniqueId()).islandTitle + "\", \"color\":\"" + plugin.myLocale(player.getUniqueId()).islandTitleColor + "\"}");
+                plugin.getServer().dispatchCommand(plugin.getServer().getConsoleSender(),
+                        "minecraft:title " + player.getName() + " title {\"text\":\"" + plugin.myLocale(player.getUniqueId()).islandTitle.replace("[player]", player.getName()) + "\", \"color\":\"" + plugin.myLocale(player.getUniqueId()).islandTitleColor + "\"}");
+            }
+            if (!plugin.myLocale(player.getUniqueId()).islandDonate.isEmpty() && !plugin.myLocale(player.getUniqueId()).islandURL.isEmpty()) {
+                //plugin.getLogger().info("DEBUG: tellraw " + player.getName() + " {\"text\":\"" + plugin.myLocale(player.getUniqueId()).islandDonate + "\",\"color\":\"" + plugin.myLocale(player.getUniqueId()).islandDonateColor + "\",\"clickEvent\":{\"action\":\"open_url\",\"value\":\""
+                //                + plugin.myLocale(player.getUniqueId()).islandURL + "\"}}");
+                plugin.getServer().dispatchCommand(
+                        plugin.getServer().getConsoleSender(),
+                        "minecraft:tellraw " + player.getName() + " {\"text\":\"" + plugin.myLocale(player.getUniqueId()).islandDonate.replace("[player]", player.getName()) + "\",\"color\":\"" + plugin.myLocale(player.getUniqueId()).islandDonateColor + "\",\"clickEvent\":{\"action\":\"open_url\",\"value\":\""
+                                + plugin.myLocale(player.getUniqueId()).islandURL + "\"}}");
+            }
+        }
+        if (reason.equals(PasteReason.NEW_ISLAND)) {
+            // Run any commands that need to be run at the start
+            //plugin.getLogger().info("DEBUG: First time 2");
+            if (!player.hasPermission(Settings.PERMPREFIX + "command.newexempt")) {
+                //plugin.getLogger().info("DEBUG: Executing new island commands 2");
+                IslandCmd.runCommands(Settings.startCommands, player);
+            }
+        } else if (reason.equals(PasteReason.RESET)) {
+            // Run any commands that need to be run at reset
+            //plugin.getLogger().info("DEBUG: Reset");
+            if (!player.hasPermission(Settings.PERMPREFIX + "command.resetexempt")) {
+                //plugin.getLogger().info("DEBUG: Executing reset island commands");
+                IslandCmd.runCommands(Settings.resetCommands, player);
+            }
+        }
         if (!islandCompanion.isEmpty()) {
             Bukkit.getServer().getScheduler().runTaskLater(ASkyBlock.getPlugin(), new Runnable() {
                 @Override
@@ -1398,7 +1540,7 @@ public class Schematic {
                 LivingEntity companion = (LivingEntity) location.getWorld().spawnEntity(location, type);
                 if (!companionNames.isEmpty()) {
                     randomNum = rand.nextInt(companionNames.size());
-                    String name = companionNames.get(randomNum).replace("[player]", player.getDisplayName());
+                    String name = companionNames.get(randomNum).replace("[player]", player.getName());
                     //plugin.getLogger().info("DEBUG: name is " + name);
                     companion.setCustomName(name);
                     companion.setCustomNameVisible(true);
@@ -1527,7 +1669,7 @@ public class Schematic {
         // Run through the schematic and try and find the spawnBlock
         for (IslandBlock islandBlock : islandBlocks) {
             if (islandBlock.getTypeId() == playerSpawnBlock.getId()) {
-                playerSpawn = islandBlock.getVector().subtract(bedrock).add(new Vector(0.5D,0D,0.5D));
+                playerSpawn = islandBlock.getVector().subtract(bedrock).add(new Vector(0.5D,-1D,0.5D));
                 // Set the block to air
                 islandBlock.setTypeId((short)0);
                 return true;
@@ -1566,4 +1708,61 @@ public class Schematic {
         return cost;
     }
 
+    private void resetMoney(Player player) {
+        if (!Settings.useEconomy) {
+            return;
+        }
+        // Set player's balance in acid island to the starting balance
+        try {
+            // plugin.getLogger().info("DEBUG: " + player.getName() + " " +
+            // Settings.general_worldName);
+            if (VaultHelper.econ == null) {
+                // plugin.getLogger().warning("DEBUG: econ is null!");
+                VaultHelper.setupEconomy();
+            }
+            Double playerBalance = VaultHelper.econ.getBalance(player, Settings.worldName);
+            // plugin.getLogger().info("DEBUG: playerbalance = " +
+            // playerBalance);
+            // Round the balance to 2 decimal places and slightly down to
+            // avoid issues when withdrawing the amount later
+            BigDecimal bd = new BigDecimal(playerBalance);
+            bd = bd.setScale(2, RoundingMode.HALF_DOWN);
+            playerBalance = bd.doubleValue();
+            // plugin.getLogger().info("DEBUG: playerbalance after rounding = "
+            // + playerBalance);
+            if (playerBalance != Settings.startingMoney) {
+                if (playerBalance > Settings.startingMoney) {
+                    Double difference = playerBalance - Settings.startingMoney;
+                    EconomyResponse response = VaultHelper.econ.withdrawPlayer(player, Settings.worldName, difference);
+                    // plugin.getLogger().info("DEBUG: withdrawn");
+                    if (response.transactionSuccess()) {
+                        plugin.getLogger().info(
+                                "FYI:" + player.getName() + " had " + VaultHelper.econ.format(playerBalance) + " when they typed /island and it was set to "
+                                        + Settings.startingMoney);
+                    } else {
+                        plugin.getLogger().warning(
+                                "Problem trying to withdraw " + playerBalance + " from " + player.getName() + "'s account when they typed /island!");
+                        plugin.getLogger().warning("Error from economy was: " + response.errorMessage);
+                    }
+                } else {
+                    Double difference = Settings.startingMoney - playerBalance;
+                    EconomyResponse response = VaultHelper.econ.depositPlayer(player, Settings.worldName, difference);
+                    if (response.transactionSuccess()) {
+                        plugin.getLogger().info(
+                                "FYI:" + player.getName() + " had " + VaultHelper.econ.format(playerBalance) + " when they typed /island and it was set to "
+                                        + Settings.startingMoney);
+                    } else {
+                        plugin.getLogger().warning(
+                                "Problem trying to deposit " + playerBalance + " from " + player.getName() + "'s account when they typed /island!");
+                        plugin.getLogger().warning("Error from economy was: " + response.errorMessage);
+                    }
+
+                }
+            }
+        } catch (final Exception e) {
+            plugin.getLogger().severe("Error trying to zero " + player.getName() + "'s account when they typed /island!");
+            plugin.getLogger().severe(e.getMessage());
+        }
+
+    }
 }

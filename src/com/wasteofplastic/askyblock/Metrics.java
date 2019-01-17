@@ -1,240 +1,668 @@
 package com.wasteofplastic.askyblock;
 
-import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
-import java.io.UnsupportedEncodingException;
-import java.net.Proxy;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.net.URL;
-import java.net.URLConnection;
-import java.net.URLEncoder;
-import java.util.Collections;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
+import java.util.Timer;
+import java.util.TimerTask;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 import java.util.logging.Level;
+import java.util.zip.GZIPOutputStream;
+
+import javax.net.ssl.HttpsURLConnection;
 
 import org.bukkit.Bukkit;
-import org.bukkit.World;
-import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
-import org.bukkit.plugin.Plugin;
-import org.bukkit.plugin.PluginDescriptionFile;
-import org.bukkit.scheduler.BukkitTask;
+import org.bukkit.plugin.RegisteredServiceProvider;
+import org.bukkit.plugin.ServicePriority;
+import org.bukkit.plugin.java.JavaPlugin;
+import org.json.simple.JSONArray;
+import org.json.simple.JSONObject;
 
-import com.google.common.collect.Lists;
-
+/**
+ * bStats collects some data for plugin authors.
+ *
+ * Check out https://bStats.org/ to learn more about bStats!
+ */
 public class Metrics {
-    private static String encode(final String text) throws UnsupportedEncodingException {
-        return URLEncoder.encode(text, "UTF-8");
-    }
 
-    private static void encodeDataPair(final StringBuilder buffer, final String key, final String value) throws UnsupportedEncodingException {
-        buffer.append('&').append(encode(key)).append('=').append(encode(value));
-    }
-
-    private final YamlConfiguration configuration;
-    private final File configurationFile;
-    private final boolean debug;
-    private final String guid;
-
-    private final Object optOutLock = new Object();
-
-    private final Plugin plugin;
-
-    private volatile BukkitTask task = null;
-
-    public Metrics(final Plugin plugin) throws IOException {
-        if (plugin == null) {
-            throw new IllegalArgumentException("Plugin cannot be null");
+    static {
+        // You can use the property to disable the check in your test environment
+        if (System.getProperty("bstats.relocatecheck") == null || !System.getProperty("bstats.relocatecheck").equals("false")) {
+            // Maven's Relocate is clever and changes strings, too. So we have to use this little "trick" ... :D
+            final String defaultPackage = new String(
+                    new byte[]{'o', 'r', 'g', '.', 'b', 's', 't', 'a', 't', 's', '.', 'b', 'u', 'k', 'k', 'i', 't'});
+            final String examplePackage = new String(new byte[]{'y', 'o', 'u', 'r', '.', 'p', 'a', 'c', 'k', 'a', 'g', 'e'});
+            // We want to make sure nobody just copy & pastes the example and use the wrong package names
+            if (Metrics.class.getPackage().getName().equals(defaultPackage) || Metrics.class.getPackage().getName().equals(examplePackage)) {
+                throw new IllegalStateException("bStats Metrics class has not been relocated correctly!");
+            }
         }
+    }
 
+    // The version of this bStats class
+    public static final int B_STATS_VERSION = 1;
+
+    // The url to which the data is sent
+    private static final String URL = "https://bStats.org/submitData/bukkit";
+
+    // Should failed requests be logged?
+    private static boolean logFailedRequests;
+
+    // The uuid of the server
+    private static String serverUUID;
+
+    // The plugin
+    private final JavaPlugin plugin;
+
+    // A list with all custom charts
+    private final List<CustomChart> charts = new ArrayList<>();
+
+    /**
+     * Class constructor.
+     *
+     * @param plugin - ASkyBlock plugin object The plugin which stats should be submitted.
+     */
+    public Metrics(JavaPlugin plugin) {
+        if (plugin == null) {
+            throw new IllegalArgumentException("Plugin cannot be null!");
+        }
         this.plugin = plugin;
 
-        configurationFile = getConfigFile();
-        configuration = YamlConfiguration.loadConfiguration(configurationFile);
+        // Get the config file
+        File bStatsFolder = new File(plugin.getDataFolder().getParentFile(), "bStats");
+        File configFile = new File(bStatsFolder, "config.yml");
+        YamlConfiguration config = YamlConfiguration.loadConfiguration(configFile);
 
-        configuration.addDefault("opt-out", Boolean.valueOf(false));
-        configuration.addDefault("guid", UUID.randomUUID().toString());
-        configuration.addDefault("debug", Boolean.valueOf(false));
+        // Check if the config file exists
+        if (!config.isSet("serverUuid")) {
 
-        if (configuration.get("guid", null) == null) {
-            configuration.options().header("http://mcstats.org").copyDefaults(true);
-            configuration.save(configurationFile);
-        }
+            // Add default values
+            config.addDefault("enabled", true);
+            // Every server gets it's unique random id.
+            config.addDefault("serverUuid", UUID.randomUUID().toString());
+            // Should failed request be logged?
+            config.addDefault("logFailedRequests", false);
 
-        guid = configuration.getString("guid");
-        debug = configuration.getBoolean("debug", false);
-    }
-
-    public void disable() throws IOException {
-        synchronized (optOutLock) {
-            if (!isOptOut()) {
-                configuration.set("opt-out", Boolean.valueOf(true));
-                configuration.save(configurationFile);
-            }
-
-            if (task != null) {
-                task.cancel();
-                task = null;
-            }
-        }
-    }
-
-    public void enable() throws IOException {
-        synchronized (optOutLock) {
-            if (isOptOut()) {
-                configuration.set("opt-out", Boolean.valueOf(false));
-                configuration.save(configurationFile);
-            }
-
-            if (task == null) {
-                start();
-            }
-        }
-    }
-
-    public File getConfigFile() {
-        final File pluginsFolder = plugin.getDataFolder().getParentFile();
-
-        return new File(new File(pluginsFolder, "PluginMetrics"), "config.yml");
-    }
-
-    private boolean isMineshafterPresent() {
-        try {
-            Class.forName("mineshafter.MineServer");
-            return true;
-        } catch (final Exception e) {
-        }
-        return false;
-    }
-
-    public boolean isOptOut() {
-        synchronized (optOutLock) {
+            // Inform the server owners about bStats
+            config.options().header(
+                    "bStats collects some data for plugin authors like how many servers are using their plugins.\n" +
+                            "To honor their work, you should not disable it.\n" +
+                            "This has nearly no effect on the server performance!\n" +
+                            "Check out https://bStats.org/ to learn more :)"
+                    ).copyDefaults(true);
             try {
-                configuration.load(getConfigFile());
-            } catch (final IOException ex) {
-                if (debug) {
-                    Bukkit.getLogger().log(Level.INFO, "[Metrics] " + ex.getMessage());
+                config.save(configFile);
+            } catch (IOException ignored) { }
+        }
+
+        // Load the data
+        serverUUID = config.getString("serverUuid");
+        logFailedRequests = config.getBoolean("logFailedRequests", false);
+        if (config.getBoolean("enabled", true)) {
+            boolean found = false;
+            // Search for all other bStats Metrics classes to see if we are the first one
+            for (Class<?> service : Bukkit.getServicesManager().getKnownServices()) {
+                try {
+                    service.getField("B_STATS_VERSION"); // Our identifier :)
+                    found = true; // We aren't the first
+                    break;
+                } catch (NoSuchFieldException ignored) { }
+            }
+            // Register our service
+            Bukkit.getServicesManager().register(Metrics.class, this, plugin, ServicePriority.Normal);
+            if (!found) {
+                // We are the first!
+                startSubmitting();
+            }
+        }
+    }
+
+    /**
+     * Adds a custom chart.
+     *
+     * @param chart The chart to add.
+     */
+    public void addCustomChart(CustomChart chart) {
+        if (chart == null) {
+            throw new IllegalArgumentException("Chart cannot be null!");
+        }
+        charts.add(chart);
+    }
+
+    /**
+     * Starts the Scheduler which submits our data every 30 minutes.
+     */
+    private void startSubmitting() {
+        final Timer timer = new Timer(true); // We use a timer cause the Bukkit scheduler is affected by server lags
+        timer.scheduleAtFixedRate(new TimerTask() {
+            @Override
+            public void run() {
+                if (!plugin.isEnabled()) { // Plugin was disabled
+                    timer.cancel();
+                    return;
                 }
-                return true;
-            } catch (final InvalidConfigurationException ex) {
-                if (debug) {
-                    Bukkit.getLogger().log(Level.INFO, "[Metrics] " + ex.getMessage());
-                }
-                return true;
+                // Nevertheless we want our code to run in the Bukkit main thread, so we have to use the Bukkit scheduler
+                // Don't be afraid! The connection to the bStats server is still async, only the stats collection is sync ;)
+                Bukkit.getScheduler().runTask(plugin, new Runnable() {
+                    @Override
+                    public void run() {
+                        submitData();
+                    }
+                });
             }
-            return configuration.getBoolean("opt-out", false);
-        }
+        }, 1000*60*5L, 1000*60*30L);
+        // Submit the data every 30 minutes, first time after 5 minutes to give other plugins enough time to start
+        // WARNING: Changing the frequency has no effect but your plugin WILL be blocked/deleted!
+        // WARNING: Just don't do it!
     }
 
-    private void postPlugin(final boolean isPing) throws IOException {
-        final PluginDescriptionFile description = plugin.getDescription();
-        final String pluginName = description.getName();
-        final boolean onlineMode = Bukkit.getServer().getOnlineMode();
-        final String pluginVersion = description.getVersion();
-        final String serverVersion = Bukkit.getVersion();
-        final int playersOnline = getOnlinePlayers().size();
+    /**
+     * Gets the plugin specific data.
+     * This method is called using Reflection.
+     *
+     * @return The plugin specific data.
+     */
+    public JSONObject getPluginData() {
+        JSONObject data = new JSONObject();
 
-        final StringBuilder data = new StringBuilder();
+        String pluginName = plugin.getDescription().getName();
+        String pluginVersion = plugin.getDescription().getVersion();
 
-        data.append(encode("guid")).append('=').append(encode(guid));
-        encodeDataPair(data, "version", pluginVersion);
-        encodeDataPair(data, "server", serverVersion);
-        encodeDataPair(data, "players", Integer.toString(playersOnline));
-        encodeDataPair(data, "revision", String.valueOf(6));
-
-        final String osname = System.getProperty("os.name");
-        String osarch = System.getProperty("os.arch");
-        final String osversion = System.getProperty("os.version");
-        final String java_version = System.getProperty("java.version");
-        final int coreCount = Runtime.getRuntime().availableProcessors();
-
-        if (osarch.equals("amd64")) {
-            osarch = "x86_64";
+        data.put("pluginName", pluginName); // Append the name of the plugin
+        data.put("pluginVersion", pluginVersion); // Append the version of the plugin
+        JSONArray customCharts = new JSONArray();
+        for (CustomChart customChart : charts) {
+            // Add the data of the custom charts
+            JSONObject chart = customChart.getRequestJsonObject();
+            if (chart == null) { // If the chart is null, we skip it
+                continue;
+            }
+            customCharts.add(chart);
         }
+        data.put("customCharts", customCharts);
 
-        encodeDataPair(data, "osname", osname);
-        encodeDataPair(data, "osarch", osarch);
-        encodeDataPair(data, "osversion", osversion);
-        encodeDataPair(data, "cores", Integer.toString(coreCount));
-        encodeDataPair(data, "online-mode", Boolean.toString(onlineMode));
-        encodeDataPair(data, "java_version", java_version);
-
-        if (isPing) {
-            encodeDataPair(data, "ping", "true");
-        }
-
-        final URL url = new URL("http://mcstats.org" + String.format("/report/%s", new Object[] { encode(pluginName) }));
-        URLConnection connection;
-        if (isMineshafterPresent()) {
-            connection = url.openConnection(Proxy.NO_PROXY);
-        } else {
-            connection = url.openConnection();
-        }
-
-        connection.setDoOutput(true);
-
-        final OutputStreamWriter writer = new OutputStreamWriter(connection.getOutputStream());
-        writer.write(data.toString());
-        writer.flush();
-
-        final BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
-        final String response = reader.readLine();
-
-        writer.close();
-        reader.close();
-
-        if (response == null || response.startsWith("ERR")) {
-            throw new IOException(response);
-        }
+        return data;
     }
 
-    public static List<Player> getOnlinePlayers() {
-        List<Player> list = Lists.newArrayList();
-        for (World world : Bukkit.getWorlds()) {
-            list.addAll(world.getPlayers());
+    /**
+     * Gets the server specific data.
+     *
+     * @return The server specific data.
+     */
+    private JSONObject getServerData() {
+        // Minecraft specific data
+        int playerAmount;
+        try {
+            // Around MC 1.8 the return type was changed to a collection from an array,
+            // This fixes java.lang.NoSuchMethodError: org.bukkit.Bukkit.getOnlinePlayers()Ljava/util/Collection;
+            Method onlinePlayersMethod = Class.forName("org.bukkit.Server").getMethod("getOnlinePlayers");
+            playerAmount = onlinePlayersMethod.getReturnType().equals(Collection.class)
+                    ? ((Collection<?>) onlinePlayersMethod.invoke(Bukkit.getServer())).size()
+                            : ((Player[]) onlinePlayersMethod.invoke(Bukkit.getServer())).length;
+        } catch (Exception e) {
+            playerAmount = Bukkit.getOnlinePlayers().size(); // Just use the new method if the Reflection failed
         }
-        return Collections.unmodifiableList(list);
+        int onlineMode = Bukkit.getOnlineMode() ? 1 : 0;
+        String bukkitVersion = org.bukkit.Bukkit.getVersion();
+        bukkitVersion = bukkitVersion.substring(bukkitVersion.indexOf("MC: ") + 4, bukkitVersion.length() - 1);
+
+        // OS/Java specific data
+        String javaVersion = System.getProperty("java.version");
+        String osName = System.getProperty("os.name");
+        String osArch = System.getProperty("os.arch");
+        String osVersion = System.getProperty("os.version");
+        int coreCount = Runtime.getRuntime().availableProcessors();
+
+        JSONObject data = new JSONObject();
+
+        data.put("serverUUID", serverUUID);
+
+        data.put("playerAmount", playerAmount);
+        data.put("onlineMode", onlineMode);
+        data.put("bukkitVersion", bukkitVersion);
+
+        data.put("javaVersion", javaVersion);
+        data.put("osName", osName);
+        data.put("osArch", osArch);
+        data.put("osVersion", osVersion);
+        data.put("coreCount", coreCount);
+
+        return data;
     }
 
-    public boolean start() {
-        synchronized (optOutLock) {
-            if (isOptOut()) {
-                return false;
-            }
+    /**
+     * Collects the data and sends it afterwards.
+     */
+    private void submitData() {
+        final JSONObject data = getServerData();
 
-            if (task != null) {
-                return true;
-            }
+        JSONArray pluginData = new JSONArray();
+        // Search for all other bStats Metrics classes to get their plugin data
+        for (Class<?> service : Bukkit.getServicesManager().getKnownServices()) {
+            try {
+                service.getField("B_STATS_VERSION"); // Our identifier :)
 
-            task = plugin.getServer().getScheduler().runTaskTimerAsynchronously(plugin, new Runnable() {
-                private boolean firstPost = true;
-
-                public void run() {
+                for (RegisteredServiceProvider<?> provider : Bukkit.getServicesManager().getRegistrations(service)) {
                     try {
-                        synchronized (optOutLock) {
-                            if (Metrics.this.isOptOut() && task != null) {
-                                task.cancel();
-                                task = null;
-                            }
+                        pluginData.add(provider.getService().getMethod("getPluginData").invoke(provider.getProvider()));
+                    } catch (NullPointerException | NoSuchMethodException | IllegalAccessException | InvocationTargetException ignored) { }
+                }
+            } catch (NoSuchFieldException ignored) { }
+        }
 
-                        }
+        data.put("plugins", pluginData);
 
-                        Metrics.this.postPlugin(!firstPost);
-
-                        firstPost = false;
-                    } catch (final IOException e) {
-                        if (debug) {
-                            Bukkit.getLogger().log(Level.INFO, "[Metrics] " + e.getMessage());
-                        }
+        // Create a new thread for the connection to the bStats server
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    // Send the data
+                    sendData(data);
+                } catch (Exception e) {
+                    // Something went wrong! :(
+                    if (logFailedRequests) {
+                        plugin.getLogger().log(Level.WARNING, "Could not submit plugin stats of " + plugin.getName(), e);
                     }
                 }
-            }, 0L, 12000L);
+            }
+        }).start();
+    }
 
-            return true;
+    /**
+     * Sends the data to the bStats server.
+     *
+     * @param data The data to send.
+     * @throws Exception If the request failed.
+     */
+    private static void sendData(JSONObject data) throws Exception {
+        if (data == null) {
+            throw new IllegalArgumentException("Data cannot be null!");
         }
+        if (Bukkit.isPrimaryThread()) {
+            throw new IllegalAccessException("This method must not be called from the main thread!");
+        }
+        HttpsURLConnection connection = (HttpsURLConnection) new URL(URL).openConnection();
+
+        // Compress the data to save bandwidth
+        byte[] compressedData = compress(data.toString());
+        if (compressedData == null) { return; }
+        // Add headers
+        connection.setRequestMethod("POST");
+        connection.addRequestProperty("Accept", "application/json");
+        connection.addRequestProperty("Connection", "close");
+        connection.addRequestProperty("Content-Encoding", "gzip"); // We gzip our request
+        connection.addRequestProperty("Content-Length", String.valueOf(compressedData.length));
+        connection.setRequestProperty("Content-Type", "application/json"); // We send our data in JSON format
+        connection.setRequestProperty("User-Agent", "MC-Server/" + B_STATS_VERSION);
+
+        // Send data
+        connection.setDoOutput(true);
+        DataOutputStream outputStream = new DataOutputStream(connection.getOutputStream());
+        outputStream.write(compressedData);
+        outputStream.flush();
+        outputStream.close();
+
+        connection.getInputStream().close(); // We don't care about the response - Just send our data :)
+    }
+
+    /**
+     * Gzips the given String.
+     *
+     * @param str The string to gzip.
+     * @return The gzipped String.
+     * @throws IOException If the compression failed.
+     */
+    private static byte[] compress(final String str) throws IOException {
+        if (str == null) {
+            return null;
+        }
+        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+        GZIPOutputStream gzip = new GZIPOutputStream(outputStream);
+        gzip.write(str.getBytes("UTF-8"));
+        gzip.close();
+        return outputStream.toByteArray();
+    }
+
+    /**
+     * Represents a custom chart.
+     */
+    public static abstract class CustomChart {
+
+        // The id of the chart
+        final String chartId;
+
+        /**
+         * Class constructor.
+         *
+         * @param chartId The id of the chart.
+         */
+        CustomChart(String chartId) {
+            if (chartId == null || chartId.isEmpty()) {
+                throw new IllegalArgumentException("ChartId cannot be null or empty!");
+            }
+            this.chartId = chartId;
+        }
+
+        private JSONObject getRequestJsonObject() {
+            JSONObject chart = new JSONObject();
+            chart.put("chartId", chartId);
+            try {
+                JSONObject data = getChartData();
+                if (data == null) {
+                    // If the data is null we don't send the chart.
+                    return null;
+                }
+                chart.put("data", data);
+            } catch (Throwable t) {
+                if (logFailedRequests) {
+                    Bukkit.getLogger().log(Level.WARNING, "Failed to get data for custom chart with id " + chartId, t);
+                }
+                return null;
+            }
+            return chart;
+        }
+
+        protected abstract JSONObject getChartData() throws Exception;
+
+    }
+
+    /**
+     * Represents a custom simple pie.
+     */
+    public static class SimplePie extends CustomChart {
+
+        private final Callable<String> callable;
+
+        /**
+         * Class constructor.
+         *
+         * @param chartId The id of the chart.
+         * @param callable The callable which is used to request the chart data.
+         */
+        public SimplePie(String chartId, Callable<String> callable) {
+            super(chartId);
+            this.callable = callable;
+        }
+
+        @Override
+        protected JSONObject getChartData() throws Exception {
+            JSONObject data = new JSONObject();
+            String value = callable.call();
+            if (value == null || value.isEmpty()) {
+                // Null = skip the chart
+                return null;
+            }
+            data.put("value", value);
+            return data;
+        }
+    }
+
+    /**
+     * Represents a custom advanced pie.
+     */
+    public static class AdvancedPie extends CustomChart {
+
+        private final Callable<Map<String, Integer>> callable;
+
+        /**
+         * Class constructor.
+         *
+         * @param chartId The id of the chart.
+         * @param callable The callable which is used to request the chart data.
+         */
+        public AdvancedPie(String chartId, Callable<Map<String, Integer>> callable) {
+            super(chartId);
+            this.callable = callable;
+        }
+
+        @Override
+        protected JSONObject getChartData() throws Exception {
+            JSONObject data = new JSONObject();
+            JSONObject values = new JSONObject();
+            Map<String, Integer> map = callable.call();
+            if (map == null || map.isEmpty()) {
+                // Null = skip the chart
+                return null;
+            }
+            boolean allSkipped = true;
+            for (Map.Entry<String, Integer> entry : map.entrySet()) {
+                if (entry.getValue() == 0) {
+                    continue; // Skip this invalid
+                }
+                allSkipped = false;
+                values.put(entry.getKey(), entry.getValue());
+            }
+            if (allSkipped) {
+                // Null = skip the chart
+                return null;
+            }
+            data.put("values", values);
+            return data;
+        }
+    }
+
+    /**
+     * Represents a custom drilldown pie.
+     */
+    public static class DrilldownPie extends CustomChart {
+
+        private final Callable<Map<String, Map<String, Integer>>> callable;
+
+        /**
+         * Class constructor.
+         *
+         * @param chartId The id of the chart.
+         * @param callable The callable which is used to request the chart data.
+         */
+        public DrilldownPie(String chartId, Callable<Map<String, Map<String, Integer>>> callable) {
+            super(chartId);
+            this.callable = callable;
+        }
+
+        @Override
+        public JSONObject getChartData() throws Exception {
+            JSONObject data = new JSONObject();
+            JSONObject values = new JSONObject();
+            Map<String, Map<String, Integer>> map = callable.call();
+            if (map == null || map.isEmpty()) {
+                // Null = skip the chart
+                return null;
+            }
+            boolean reallyAllSkipped = true;
+            for (Map.Entry<String, Map<String, Integer>> entryValues : map.entrySet()) {
+                JSONObject value = new JSONObject();
+                boolean allSkipped = true;
+                for (Map.Entry<String, Integer> valueEntry : map.get(entryValues.getKey()).entrySet()) {
+                    value.put(valueEntry.getKey(), valueEntry.getValue());
+                    allSkipped = false;
+                }
+                if (!allSkipped) {
+                    reallyAllSkipped = false;
+                    values.put(entryValues.getKey(), value);
+                }
+            }
+            if (reallyAllSkipped) {
+                // Null = skip the chart
+                return null;
+            }
+            data.put("values", values);
+            return data;
+        }
+    }
+
+    /**
+     * Represents a custom single line chart.
+     */
+    public static class SingleLineChart extends CustomChart {
+
+        private final Callable<Integer> callable;
+
+        /**
+         * Class constructor.
+         *
+         * @param chartId The id of the chart.
+         * @param callable The callable which is used to request the chart data.
+         */
+        public SingleLineChart(String chartId, Callable<Integer> callable) {
+            super(chartId);
+            this.callable = callable;
+        }
+
+        @Override
+        protected JSONObject getChartData() throws Exception {
+            JSONObject data = new JSONObject();
+            int value = callable.call();
+            if (value == 0) {
+                // Null = skip the chart
+                return null;
+            }
+            data.put("value", value);
+            return data;
+        }
+
+    }
+
+    /**
+     * Represents a custom multi line chart.
+     */
+    public static class MultiLineChart extends CustomChart {
+
+        private final Callable<Map<String, Integer>> callable;
+
+        /**
+         * Class constructor.
+         *
+         * @param chartId The id of the chart.
+         * @param callable The callable which is used to request the chart data.
+         */
+        public MultiLineChart(String chartId, Callable<Map<String, Integer>> callable) {
+            super(chartId);
+            this.callable = callable;
+        }
+
+        @Override
+        protected JSONObject getChartData() throws Exception {
+            JSONObject data = new JSONObject();
+            JSONObject values = new JSONObject();
+            Map<String, Integer> map = callable.call();
+            if (map == null || map.isEmpty()) {
+                // Null = skip the chart
+                return null;
+            }
+            boolean allSkipped = true;
+            for (Map.Entry<String, Integer> entry : map.entrySet()) {
+                if (entry.getValue() == 0) {
+                    continue; // Skip this invalid
+                }
+                allSkipped = false;
+                values.put(entry.getKey(), entry.getValue());
+            }
+            if (allSkipped) {
+                // Null = skip the chart
+                return null;
+            }
+            data.put("values", values);
+            return data;
+        }
+
+    }
+
+    /**
+     * Represents a custom simple bar chart.
+     */
+    public static class SimpleBarChart extends CustomChart {
+
+        private final Callable<Map<String, Integer>> callable;
+
+        /**
+         * Class constructor.
+         *
+         * @param chartId The id of the chart.
+         * @param callable The callable which is used to request the chart data.
+         */
+        public SimpleBarChart(String chartId, Callable<Map<String, Integer>> callable) {
+            super(chartId);
+            this.callable = callable;
+        }
+
+        @Override
+        protected JSONObject getChartData() throws Exception {
+            JSONObject data = new JSONObject();
+            JSONObject values = new JSONObject();
+            Map<String, Integer> map = callable.call();
+            if (map == null || map.isEmpty()) {
+                // Null = skip the chart
+                return null;
+            }
+            for (Map.Entry<String, Integer> entry : map.entrySet()) {
+                JSONArray categoryValues = new JSONArray();
+                categoryValues.add(entry.getValue());
+                values.put(entry.getKey(), categoryValues);
+            }
+            data.put("values", values);
+            return data;
+        }
+
+    }
+
+    /**
+     * Represents a custom advanced bar chart.
+     */
+    public static class AdvancedBarChart extends CustomChart {
+
+        private final Callable<Map<String, int[]>> callable;
+
+        /**
+         * Class constructor.
+         *
+         * @param chartId The id of the chart.
+         * @param callable The callable which is used to request the chart data.
+         */
+        public AdvancedBarChart(String chartId, Callable<Map<String, int[]>> callable) {
+            super(chartId);
+            this.callable = callable;
+        }
+
+        @Override
+        protected JSONObject getChartData() throws Exception {
+            JSONObject data = new JSONObject();
+            JSONObject values = new JSONObject();
+            Map<String, int[]> map = callable.call();
+            if (map == null || map.isEmpty()) {
+                // Null = skip the chart
+                return null;
+            }
+            boolean allSkipped = true;
+            for (Map.Entry<String, int[]> entry : map.entrySet()) {
+                if (entry.getValue().length == 0) {
+                    continue; // Skip this invalid
+                }
+                allSkipped = false;
+                JSONArray categoryValues = new JSONArray();
+                for (int categoryValue : entry.getValue()) {
+                    categoryValues.add(categoryValue);
+                }
+                values.put(entry.getKey(), categoryValues);
+            }
+            if (allSkipped) {
+                // Null = skip the chart
+                return null;
+            }
+            data.put("values", values);
+            return data;
+        }
+
     }
 }
